@@ -1,0 +1,25 @@
+[project]
+name = "test_strategy_protocol_generator"
+version = "0.1.0"
+description = "test_strategy_protocol_generator using crewAI"
+authors = [{ name = "Your Name", email = "you@example.com" }]
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    "crewai[tools]>=1.15.27,<2.0.0"
+]
+
+[project.scripts]
+test_strategy_protocol_generator = "test_strategy_protocol_generator.main:run"
+run_crew = "test_strategy_protocol_generator.main:run"
+train = "test_strategy_protocol_generator.main:train"
+replay = "test_strategy_protocol_generator.main:replay"
+test = "test_strategy_protocol_generator.main:test"
+run_with_trigger = "test_strategy_protocol_generator.main:run_with_trigger"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.crewai]
+type = "crew"
+project_id = "71838f07-0530-49db-8ee3-22fe907e22ef"
