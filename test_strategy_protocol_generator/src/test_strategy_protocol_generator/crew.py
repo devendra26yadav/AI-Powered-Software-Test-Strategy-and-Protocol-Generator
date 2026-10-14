@@ -18,6 +18,34 @@ class TestStrategyProtocolGenerator():
         )
 
     @agent
+    def requirements_analyst(self) -> Agent:
+        return Agent(
+            config=self.agents_config['requirements_analyst'], # type: ignore[index]
+            verbose=True
+        )
+
+    @agent
+    def test_strategy_architect(self) -> Agent:
+        return Agent(
+            config=self.agents_config['test_strategy_architect'], # type: ignore[index]
+            verbose=True
+        )
+
+    @agent
+    def quality_assurance_engineer(self) -> Agent:
+        return Agent(
+            config=self.agents_config['quality_assurance_engineer'], # type: ignore[index]
+            verbose=True
+        )
+
+    @agent
+    def risk_manager(self) -> Agent:
+        return Agent(
+            config=self.agents_config['risk_manager'], # type: ignore[index]
+            verbose=True
+        )
+
+    @agent
     def reporting_analyst(self) -> Agent:
         return Agent(
             config=self.agents_config['reporting_analyst'], # type: ignore[index]
