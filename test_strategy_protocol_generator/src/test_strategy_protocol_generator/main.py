@@ -1,6 +1,9 @@
 #!/usr/bin/env python
 import sys
+import re
+import tempfile
 import warnings
+import zipfile
 
 from datetime import datetime
 from pathlib import Path
@@ -10,6 +13,19 @@ import gradio as gr
 from test_strategy_protocol_generator.crew import TestStrategyProtocolGenerator
 
 warnings.filterwarnings("ignore", category=SyntaxWarning, module="pysbd")
+
+DOCUMENTS = [
+    ("01_project_test_plan.md", "Project Test Plan"),
+    ("02_research_findings.md", "Research Findings"),
+    ("03_requirements_and_traceability.md", "Requirements and Traceability"),
+    ("04_test_strategy.md", "Test Strategy"),
+    ("05_test_protocol.md", "Test Protocol"),
+    ("06_test_suites_and_cases.md", "Test Suites and Cases"),
+    ("07_manual_vs_automated_testing.md", "Manual vs. Automated Testing"),
+    ("08_quality_review.md", "Quality Review"),
+    ("09_risk_register.md", "Risk Register"),
+    ("10_executive_summary.md", "Executive Summary"),
+]
 
 
 def _extract_text_from_file(file_path: str) -> str:
@@ -63,14 +79,54 @@ def _build_document_context(uploaded_files):
     return "\n\n".join(collected_sections)
 
 
-def run(topic: str = "AI LLMs"):
+def _write_document_package(result, topic: str):
+    """Write each crew task result as a separate Markdown file and ZIP bundle."""
+    task_outputs = getattr(result, "tasks_output", [])
+    safe_topic = re.sub(r"[^a-zA-Z0-9]+", "-", topic).strip("-").lower() or "software-project"
+    output_dir = Path(tempfile.mkdtemp(prefix=f"{safe_topic}-test-docs-"))
+    generated_files = []
+
+    for index, (filename, title) in enumerate(DOCUMENTS):
+        if index < len(task_outputs):
+            task_output = task_outputs[index]
+            content = getattr(task_output, "raw", None) or str(task_output)
+        elif index == len(DOCUMENTS) - 1:
+            content = getattr(result, "raw", None) or str(result)
+        else:
+            content = "No output was returned for this deliverable. Review the crew run and regenerate."
+
+        document_path = output_dir / filename
+        document_path.write_text(
+            f"# {title}\n\nProject: {topic}\n\n{content.strip()}\n",
+            encoding="utf-8",
+        )
+        generated_files.append(str(document_path))
+
+    readme_path = output_dir / "README.md"
+    readme_path.write_text(
+        "# Generated Test Documentation\n\n" + "\n".join(
+            f"- {filename}: {title}" for filename, title in DOCUMENTS
+        ) + "\n",
+        encoding="utf-8",
+    )
+    generated_files.append(str(readme_path))
+
+    archive_path = output_dir.parent / f"{output_dir.name}.zip"
+    with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for file_path in generated_files:
+            archive.write(file_path, arcname=Path(file_path).name)
+
+    return generated_files, str(archive_path)
+
+
+def run(topic: str = "Software Project"):
     """
     Run the crew with a default or supplied topic.
     """
     inputs = {
         'topic': topic,
         'current_year': str(datetime.now().year),
-        'document_context': 'No project documents were uploaded. Use topic-based research and standard testing context only.'
+        'document_context': 'No project documents were uploaded. Use the topic and general software testing practices only. State assumptions and do not assume a specific industry.'
     }
 
     try:
@@ -97,16 +153,18 @@ def launch_gradio_app():
         }
 
         result = TestStrategyProtocolGenerator().crew().kickoff(inputs=inputs)
-        return result.raw if hasattr(result, "raw") else str(result)
+        document_files, archive_file = _write_document_package(result, topic.strip())
+        status = f"Generated {len(DOCUMENTS)} separate testing documents for {topic.strip()}."
+        return document_files, archive_file, status
 
     with gr.Blocks(title="Test Strategy Protocol Generator") as demo:
         gr.Markdown("# Test Strategy Protocol Generator")
-        gr.Markdown("Upload the required project documents and provide the project topic to generate a strategy report.")
+        gr.Markdown("Describe any software project, upload its relevant documents, and generate a complete testing documentation package.")
 
         topic = gr.Textbox(
             label="Project / Topic",
-            placeholder="Example: AI LLMs testing for healthcare assistant",
-            value="AI LLMs"
+            placeholder="Example: testing a SaaS inventory management web application",
+            value="Software Project"
         )
         uploaded_files = gr.File(
             label="Upload required documents",
@@ -117,17 +175,15 @@ def launch_gradio_app():
         all_documents_added = gr.Checkbox(
             label="I confirm that all required documents have been uploaded."
         )
-        submit = gr.Button("Generate Test Strategy")
-        output = gr.Textbox(
-            label="Generated Report",
-            lines=25,
-            placeholder="The generated strategy will appear here..."
-        )
+        submit = gr.Button("Generate Testing Documents")
+        documents_output = gr.Files(label="Individual Documents")
+        archive_output = gr.File(label="Download All Documents (.zip)")
+        status_output = gr.Textbox(label="Generation Status", interactive=False)
 
         submit.click(
             fn=generate_strategy,
             inputs=[topic, uploaded_files, all_documents_added],
-            outputs=output,
+            outputs=[documents_output, archive_output, status_output],
         )
 
     return demo
@@ -138,7 +194,7 @@ def train():
     Train the crew for a given number of iterations.
     """
     inputs = {
-        "topic": "AI LLMs",
+        "topic": "Software Project",
         'current_year': str(datetime.now().year),
         'document_context': 'No project documents were uploaded. Use topic-based research and standard testing context only.'
     }
@@ -163,7 +219,7 @@ def test():
     Test the crew execution and returns the results.
     """
     inputs = {
-        "topic": "AI LLMs",
+        "topic": "Software Project",
         "current_year": str(datetime.now().year),
         'document_context': 'No project documents were uploaded. Use topic-based research and standard testing context only.'
     }

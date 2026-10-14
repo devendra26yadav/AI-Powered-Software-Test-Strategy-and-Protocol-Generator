@@ -1,9 +1,11 @@
-As a clinician, I want to upload patient notes so that I can receive a summary faster.
+As an inventory manager, I want to create and update stock items so that inventory records stay accurate.
 
-As a medical reviewer, I want confidence labels so that I can judge which recommendations need follow-up.
+As a warehouse operator, I want to record incoming and outgoing stock so that quantities reflect physical movements.
 
-As a compliance officer, I want traceable logs so that I can audit AI-generated recommendations.
+As a business owner, I want low-stock alerts so that I can reorder products before they run out.
 
-As a product manager, I want a safe fallback experience so that the app does not provide unsafe medical advice without review.
+As an account administrator, I want role-based access so that staff can only perform authorized actions.
 
-As an operations engineer, I want monitoring dashboards so that I can detect latency and failure spikes.
+As an inventory manager, I want to search and filter products so that I can find items quickly.
+
+As an auditor, I want a history of stock changes so that I can investigate discrepancies.

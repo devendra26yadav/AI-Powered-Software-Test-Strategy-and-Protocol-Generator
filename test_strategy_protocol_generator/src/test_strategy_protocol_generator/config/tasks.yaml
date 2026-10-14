@@ -2,17 +2,9 @@ planning_task:
   description: >
     Act as the project lead for {topic}. Define the overall testing objectives, sequencing,
     responsibilities, and success criteria. Outline how the team will move from research to
-    requirements, strategy, validation, and reporting.
-  expected_output: >
-    A concise project plan and execution brief that defines the team workflow, priorities, deliverables,
-    and decision points for the test strategy work.
-  agent: test_lead
-
-planning_task:
-  description: >
-    Act as the project lead for {topic}. Define the overall testing objectives, sequencing,
-    responsibilities, and success criteria. Outline how the team will move from research to
-    requirements, strategy, validation, and reporting.
+    requirements, strategy, test design, validation, and reporting. Treat {topic} as any kind
+    of software product or system. Tailor the work to the project context and do not assume a
+    particular industry or regulatory regime.
     Use the uploaded project documents as context when they are provided. Document context:
     {document_context}
   expected_output: >
@@ -22,9 +14,10 @@ planning_task:
 
 research_task:
   description: >
-    Conduct a thorough research about {topic}.
-    Focus on current practices, standards, tools, trends, risks, and recent developments relevant
-    to software quality, test strategy, and release confidence.
+    Research relevant software quality practices, standards, test techniques, tools, and risks for
+    {topic}. Tailor findings to the product type and technology shown in the uploaded documents.
+    Do not assume healthcare or another regulated domain. Do not invent sources, standards, or
+    project facts; label assumptions and identify where current verification is needed.
     Consider that the current year is {current_year}.
     Use the following uploaded project documentation as additional evidence and context:
     {document_context}
@@ -35,8 +28,9 @@ research_task:
 
 requirements_task:
   description: >
-    Review the research findings and define the key functional, non-functional, business, and
-    compliance requirements that must be covered by a robust testing strategy for {topic}.
+    Review the project context and define the functional, non-functional, business, security,
+    accessibility, compatibility, and operational requirements relevant to testing {topic}.
+    Include regulatory or compliance requirements only when supported by the supplied context.
     Highlight gaps, assumptions, and scope boundaries.
     Use the uploaded documentation as supporting context:
     {document_context}
@@ -57,6 +51,47 @@ strategy_task:
     lifecycle phases, and execution plan for {topic}.
   agent: test_strategy_architect
 
+test_protocol_task:
+  description: >
+    Create an executable test protocol for {topic} using the agreed scope, requirements, and
+    strategy. Specify test phases, environment and data needs, roles, entry and exit criteria,
+    execution workflow, evidence to retain, defect severity and escalation, and release decisions.
+    Keep the protocol appropriate to the software type and identify unresolved assumptions.
+    Project documents:
+    {document_context}
+  expected_output: >
+    A standalone test protocol that a delivery team can follow, with clear phases, responsibilities,
+    prerequisites, pass and fail criteria, defect handling, and release sign-off conditions.
+  agent: test_strategy_architect
+
+test_design_task:
+  description: >
+    Design representative test suites and detailed test cases for {topic}, traceable to the
+    requirements and risks. Cover applicable positive, negative, boundary, integration, regression,
+    security, accessibility, and performance scenarios. For each case include an ID, objective,
+    priority, test level, preconditions, steps, expected result, and requirement or risk link.
+    Avoid inventing product behavior that is not in the context; mark assumptions explicitly.
+    Project documents:
+    {document_context}
+  expected_output: >
+    A standalone test suite document containing grouped, prioritized, executable test cases and
+    traceability to requirements or risks, plus any assumptions requiring confirmation.
+  agent: quality_assurance_engineer
+
+automation_assessment_task:
+  description: >
+    Compare manual and automated testing for {topic}. Identify which test activities are best kept
+    manual, which should be automated, and which are candidates for a hybrid approach. Compare
+    value, repeatability, setup and maintenance cost, feedback speed, required skills, and limitations.
+    Recommend an incremental automation roadmap and suitable tool categories without assuming a
+    specific technology stack unless the documents identify one.
+    Project documents:
+    {document_context}
+  expected_output: >
+    A standalone manual-versus-automation assessment with a comparison matrix, prioritized
+    automation candidates, rationale, tool categories, and an incremental adoption roadmap.
+  agent: test_strategy_architect
+
 quality_task:
   description: >
     Critically review the draft strategy and verify that it is practical, measurable, and executable.
@@ -70,8 +105,9 @@ quality_task:
 
 risk_task:
   description: >
-    Evaluate the strategy for operational, product, and compliance risks. Identify the highest-impact
-    failure modes, dependencies, and mitigation steps that should be included in the final protocol.
+    Evaluate product, technical, security, operational, delivery, and domain-specific risks for
+    {topic}. Include compliance risks only when relevant to the project context. Identify failure
+    modes, affected requirements, likelihood, impact, mitigations, and residual risks.
     Review the uploaded project documents for risk evidence and scope constraints:
     {document_context}
   expected_output: >
@@ -80,13 +116,13 @@ risk_task:
 
 reporting_task:
   description: >
-    Combine all research, requirements, strategy, quality, and risk findings into one cohesive engineering
-    report. Expand each section into detailed markdown content suitable for stakeholders and delivery teams.
+    Create a concise executive summary that indexes and synthesizes the separate testing documents
+    produced for {topic}. Note key decisions, assumptions, unresolved questions, and release-readiness
+    recommendations. Do not replace or collapse the standalone deliverables into this summary.
     Use the uploaded project documents and all prior outputs as part of the final evidence base:
     {document_context}
   expected_output: >
-    A fully fledged report in markdown with clear sections for background, requirements, strategy,
-    quality validation, risk analysis, and final recommendations.
+    A standalone markdown executive summary with links or filenames for each generated deliverable,
+    key recommendations, assumptions, and open decisions.
     Formatted as markdown without '```'
   agent: reporting_analyst
-  output_file: report.md

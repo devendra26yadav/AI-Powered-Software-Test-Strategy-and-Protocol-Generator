@@ -84,6 +84,24 @@ class TestStrategyProtocolGenerator():
         )
 
     @task
+    def test_protocol_task(self) -> Task:
+        return Task(
+            config=self.tasks_config['test_protocol_task'], # type: ignore[index]
+        )
+
+    @task
+    def test_design_task(self) -> Task:
+        return Task(
+            config=self.tasks_config['test_design_task'], # type: ignore[index]
+        )
+
+    @task
+    def automation_assessment_task(self) -> Task:
+        return Task(
+            config=self.tasks_config['automation_assessment_task'], # type: ignore[index]
+        )
+
+    @task
     def quality_task(self) -> Task:
         return Task(
             config=self.tasks_config['quality_task'], # type: ignore[index]
@@ -99,7 +117,6 @@ class TestStrategyProtocolGenerator():
     def reporting_task(self) -> Task:
         return Task(
             config=self.tasks_config['reporting_task'], # type: ignore[index]
-            output_file='report.md'
         )
 
     @crew

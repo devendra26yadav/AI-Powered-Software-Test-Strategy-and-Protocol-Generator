@@ -1,6 +1,6 @@
 risk_id,risk_category,likelihood,impact,mitigation
-R-01,prompt_injection,medium,high,"sanitize prompts and restrict document trust boundaries"
-R-02,clinical_hallucination,medium,critical,"require evidence citations and human review"
-R-03,authentication_bypass,low,critical,"enforce MFA and role-based controls"
-R-04,latency_spike,medium,medium,"use request throttling and autoscaling"
-R-05,audit_gap,low,high,"retain prompt and response logs for review"
+R-01,concurrent_stock_update,medium,high,"use transactional updates and test concurrent adjustment scenarios"
+R-02,authorization_bypass,low,critical,"enforce account and role checks at the API and test cross-account access"
+R-03,incorrect_reorder_alert,medium,medium,"test threshold boundaries and monitor notification delivery"
+R-04,slow_inventory_search,medium,medium,"test realistic data volumes and optimize measured query bottlenecks"
+R-05,incomplete_audit_history,low,high,"verify every stock-changing operation records actor, time, and before/after values"

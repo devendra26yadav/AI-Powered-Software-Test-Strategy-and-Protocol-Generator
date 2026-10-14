@@ -1,22 +1,25 @@
-project: AI Health Assistant
+project: Inventory Management Web Application
 version: 1.0
 scope:
-  - summarize patient notes
-  - detect confidence and uncertainty
-  - verify safety warnings and audit logs
+  - manage inventory items and suppliers
+  - record stock movements and enforce quantity rules
+  - search inventory and trigger low-stock alerts
+  - verify role-based access and audit history
 
 functional_tests:
-  - name: upload_valid_notes
-    expected_result: summary is generated successfully
-  - name: unsupported_recommendation
-    expected_result: recommendation is flagged for human review
-  - name: cite_source_text
-    expected_result: output includes evidence references
+  - name: create_inventory_item
+    expected_result: item is saved and displayed with the correct values
+  - name: prevent_unauthorized_stock_adjustment
+    expected_result: request is rejected and no stock change is recorded
+  - name: low_stock_threshold
+    expected_result: alert appears when quantity reaches the configured threshold
+  - name: concurrent_stock_updates
+    expected_result: final quantity reflects both valid transactions without lost updates
 
 non_functional_tests:
   - name: response_time
-    target: under 10 seconds
+    target: standard inventory pages load in under 2 seconds
   - name: security
-    target: encryption in transit and at rest
-  - name: auditability
-    target: all actions logged with timestamps
+    target: authorization enforced for every inventory operation
+  - name: compatibility
+    target: supported desktop browsers and tablet-sized screens
