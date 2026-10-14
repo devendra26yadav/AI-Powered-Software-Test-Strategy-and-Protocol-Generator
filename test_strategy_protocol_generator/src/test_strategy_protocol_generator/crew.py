@@ -59,6 +59,30 @@ class TestStrategyProtocolGenerator():
         )
 
     @task
+    def requirements_task(self) -> Task:
+        return Task(
+            config=self.tasks_config['requirements_task'], # type: ignore[index]
+        )
+
+    @task
+    def strategy_task(self) -> Task:
+        return Task(
+            config=self.tasks_config['strategy_task'], # type: ignore[index]
+        )
+
+    @task
+    def quality_task(self) -> Task:
+        return Task(
+            config=self.tasks_config['quality_task'], # type: ignore[index]
+        )
+
+    @task
+    def risk_task(self) -> Task:
+        return Task(
+            config=self.tasks_config['risk_task'], # type: ignore[index]
+        )
+
+    @task
     def reporting_task(self) -> Task:
         return Task(
             config=self.tasks_config['reporting_task'], # type: ignore[index]
