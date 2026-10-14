@@ -11,6 +11,13 @@ class TestStrategyProtocolGenerator():
     tasks: list[Task]
 
     @agent
+    def test_lead(self) -> Agent:
+        return Agent(
+            config=self.agents_config['test_lead'], # type: ignore[index]
+            verbose=True
+        )
+
+    @agent
     def researcher(self) -> Agent:
         return Agent(
             config=self.agents_config['researcher'], # type: ignore[index]
@@ -50,6 +57,12 @@ class TestStrategyProtocolGenerator():
         return Agent(
             config=self.agents_config['reporting_analyst'], # type: ignore[index]
             verbose=True
+        )
+
+    @task
+    def planning_task(self) -> Task:
+        return Task(
+            config=self.tasks_config['planning_task'], # type: ignore[index]
         )
 
     @task

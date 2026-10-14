@@ -1,3 +1,13 @@
+planning_task:
+  description: >
+    Act as the project lead for {topic}. Define the overall testing objectives, sequencing,
+    responsibilities, and success criteria. Outline how the team will move from research to
+    requirements, strategy, validation, and reporting.
+  expected_output: >
+    A concise project plan and execution brief that defines the team workflow, priorities, deliverables,
+    and decision points for the test strategy work.
+  agent: test_lead
+
 research_task:
   description: >
     Conduct a thorough research about {topic}.
