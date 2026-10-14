@@ -5,7 +5,8 @@ description = "test_strategy_protocol_generator using crewAI"
 authors = [{ name = "Your Name", email = "you@example.com" }]
 requires-python = ">=3.10,<3.14"
 dependencies = [
-    "crewai[tools]>=1.15.27,<2.0.0"
+    "crewai[tools]>=1.15.27,<2.0.0",
+    "gradio>=4.36.0,<6.0.0"
 ]
 
 [project.scripts]

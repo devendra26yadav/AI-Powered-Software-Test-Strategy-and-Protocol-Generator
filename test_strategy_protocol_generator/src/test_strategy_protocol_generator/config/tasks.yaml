@@ -8,12 +8,26 @@ planning_task:
     and decision points for the test strategy work.
   agent: test_lead
 
+planning_task:
+  description: >
+    Act as the project lead for {topic}. Define the overall testing objectives, sequencing,
+    responsibilities, and success criteria. Outline how the team will move from research to
+    requirements, strategy, validation, and reporting.
+    Use the uploaded project documents as context when they are provided. Document context:
+    {document_context}
+  expected_output: >
+    A concise project plan and execution brief that defines the team workflow, priorities, deliverables,
+    and decision points for the test strategy work.
+  agent: test_lead
+
 research_task:
   description: >
     Conduct a thorough research about {topic}.
     Focus on current practices, standards, tools, trends, risks, and recent developments relevant
     to software quality, test strategy, and release confidence.
     Consider that the current year is {current_year}.
+    Use the following uploaded project documentation as additional evidence and context:
+    {document_context}
   expected_output: >
     A concise but evidence-based summary of the 10 most relevant findings about {topic},
     including why they matter to a software testing strategy.
@@ -24,6 +38,8 @@ requirements_task:
     Review the research findings and define the key functional, non-functional, business, and
     compliance requirements that must be covered by a robust testing strategy for {topic}.
     Highlight gaps, assumptions, and scope boundaries.
+    Use the uploaded documentation as supporting context:
+    {document_context}
   expected_output: >
     A structured requirements brief covering scope, quality objectives, constraints, dependencies,
     and a prioritized list of testable requirements for {topic}.
@@ -34,6 +50,8 @@ strategy_task:
     Based on the research and requirements, design a complete test strategy for {topic}.
     Include test levels, entry/exit criteria, coverage model, test design techniques,
     tooling, environment needs, and release readiness approach.
+    Incorporate inputs from the uploaded documents and the project context below:
+    {document_context}
   expected_output: >
     A comprehensive test strategy document with objectives, scope, coverage approach, test types,
     lifecycle phases, and execution plan for {topic}.
@@ -43,6 +61,8 @@ quality_task:
   description: >
     Critically review the draft strategy and verify that it is practical, measurable, and executable.
     Check for missing quality gates, unclear roles, incomplete test cases, and gaps in release validation.
+    Use the uploaded project documents as validation context:
+    {document_context}
   expected_output: >
     A QA validation report that identifies weaknesses, recommends improvements, and confirms
     the strategy is realistic for delivery and release operations.
@@ -52,6 +72,8 @@ risk_task:
   description: >
     Evaluate the strategy for operational, product, and compliance risks. Identify the highest-impact
     failure modes, dependencies, and mitigation steps that should be included in the final protocol.
+    Review the uploaded project documents for risk evidence and scope constraints:
+    {document_context}
   expected_output: >
     A risk register with ranked risks, causes, affected areas, impact, likelihood, and mitigation actions.
   agent: risk_manager
@@ -60,6 +82,8 @@ reporting_task:
   description: >
     Combine all research, requirements, strategy, quality, and risk findings into one cohesive engineering
     report. Expand each section into detailed markdown content suitable for stakeholders and delivery teams.
+    Use the uploaded project documents and all prior outputs as part of the final evidence base:
+    {document_context}
   expected_output: >
     A fully fledged report in markdown with clear sections for background, requirements, strategy,
     quality validation, risk analysis, and final recommendations.
