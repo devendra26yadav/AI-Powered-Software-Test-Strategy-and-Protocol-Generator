@@ -1,0 +1,22 @@
+project: AI Health Assistant
+version: 1.0
+scope:
+  - summarize patient notes
+  - detect confidence and uncertainty
+  - verify safety warnings and audit logs
+
+functional_tests:
+  - name: upload_valid_notes
+    expected_result: summary is generated successfully
+  - name: unsupported_recommendation
+    expected_result: recommendation is flagged for human review
+  - name: cite_source_text
+    expected_result: output includes evidence references
+
+non_functional_tests:
+  - name: response_time
+    target: under 10 seconds
+  - name: security
+    target: encryption in transit and at rest
+  - name: auditability
+    target: all actions logged with timestamps

@@ -1,0 +1,6 @@
+risk_id,risk_category,likelihood,impact,mitigation
+R-01,prompt_injection,medium,high,"sanitize prompts and restrict document trust boundaries"
+R-02,clinical_hallucination,medium,critical,"require evidence citations and human review"
+R-03,authentication_bypass,low,critical,"enforce MFA and role-based controls"
+R-04,latency_spike,medium,medium,"use request throttling and autoscaling"
+R-05,audit_gap,low,high,"retain prompt and response logs for review"

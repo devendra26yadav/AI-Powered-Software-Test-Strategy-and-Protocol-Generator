@@ -1,0 +1,9 @@
+As a clinician, I want to upload patient notes so that I can receive a summary faster.
+
+As a medical reviewer, I want confidence labels so that I can judge which recommendations need follow-up.
+
+As a compliance officer, I want traceable logs so that I can audit AI-generated recommendations.
+
+As a product manager, I want a safe fallback experience so that the app does not provide unsafe medical advice without review.
+
+As an operations engineer, I want monitoring dashboards so that I can detect latency and failure spikes.
