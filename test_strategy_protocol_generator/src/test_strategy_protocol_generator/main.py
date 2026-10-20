@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 import sys
+import json
 import re
 import tempfile
 import warnings
@@ -8,6 +9,9 @@ import zipfile
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
+from docx import Document
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Font, PatternFill
 
 import gradio as gr
 
@@ -95,17 +99,17 @@ MEDICAL_DEVICE_SUMMARY_INSTRUCTIONS = (
 
 
 GENERAL_SOFTWARE_DOCUMENTS = [
-    ("01_software_test_plan.md", "Software Test Plan"),
-    ("02_software_test_protocol.md", "Software Test Protocol"),
-    ("03_requirements_traceability_matrix.md", "Requirements Traceability Matrix"),
-    ("04_software_test_summary_report.md", "Software Test Summary Report"),
+    ("Software_Test_Plan.docx", "Software Test Plan"),
+    ("Software_Test_Protocol.docx", "Software Test Protocol"),
+    ("Requirements_Traceability_Matrix.xlsx", "Requirements Traceability Matrix"),
+    ("Software_Test_Summary_Report.docx", "Software Test Summary Report"),
 ]
 
 MEDICAL_DEVICE_SOFTWARE_DOCUMENTS = [
-    ("01_software_test_plan.md", "Software Test Plan"),
-    ("02_software_verification_protocol.md", "Software Verification Protocol"),
-    ("03_requirements_risk_traceability_matrix.md", "Requirements and Risk Traceability Matrix"),
-    ("04_software_verification_summary_report.md", "Software Verification Summary Report"),
+    ("Software_Test_Plan.docx", "Software Test Plan"),
+    ("Software_Verification_Protocol.docx", "Software Verification Protocol"),
+    ("Requirements_Risk_Traceability_Matrix.xlsx", "Requirements and Risk Traceability Matrix"),
+    ("Software_Verification_Summary_Report.docx", "Software Verification Summary Report"),
 ]
 
 TASK_OUTPUT_INDEX = {
@@ -490,7 +494,525 @@ def _mark_cases_not_executed(content: str) -> str:
     return content
 
 
-def _build_document_contents(task_outputs, result, mode, document_context=""):
+def _case_records(content: str) -> list[dict[str, str]]:
+    heading_matches = list(
+        re.finditer(
+            r"^(?P<heading>#{2,6})\s+.*?\b(?P<id>TC-[A-Z0-9]+(?:-[A-Z0-9]+)*)\b.*$",
+            content,
+            re.IGNORECASE | re.MULTILINE,
+        )
+    )
+    if heading_matches:
+        starts = [
+            (match.start(), match.end(), match.group("id").upper(), len(match.group("heading")))
+            for match in heading_matches
+        ]
+        heading_pattern = re.compile(r"^(#{1,6})\s+", re.MULTILINE)
+    else:
+        field_matches = list(
+            re.finditer(
+                r"^\s*(?:[-*]\s*)?(?:\*\*)?Test Case ID(?:\*\*)?\s*:\s*"
+                r"(?P<id>TC-[A-Z0-9]+(?:-[A-Z0-9]+)*)\b.*$",
+                content,
+                re.IGNORECASE | re.MULTILINE,
+            )
+        )
+        inline_matches = [] if field_matches else list(
+            re.finditer(
+                r"^\s*(?P<id>TC-[A-Z0-9]+(?:-[A-Z0-9]+)*)\s*[:.)-].*$",
+                content,
+                re.IGNORECASE | re.MULTILINE,
+            )
+        )
+        matches = field_matches or inline_matches
+        starts = [(match.start(), match.end(), match.group("id").upper(), 0) for match in matches]
+        heading_pattern = re.compile(r"^\s*$")
+
+    records = []
+    for index, (start, body_start, case_id, level) in enumerate(starts):
+        end = len(content)
+        if level:
+            next_heading = heading_pattern.search(content, body_start)
+            while next_heading:
+                if len(next_heading.group(1)) <= level:
+                    end = next_heading.start()
+                    break
+                next_heading = heading_pattern.search(content, next_heading.end())
+        elif index + 1 < len(starts):
+            end = starts[index + 1][0]
+
+        block = content[start:end]
+        requirement_ids = list(dict.fromkeys(_requirement_ids(block)))
+        expected_match = re.search(
+            r"^\s*(?:[-*]\s*)?(?:\*\*)?Expected Results?(?:\*\*)?\s*:\s*(.*)$",
+            block,
+            re.IGNORECASE | re.MULTILINE,
+        )
+        actual_match = re.search(
+            r"^\s*(?:[-*]\s*)?(?:\*\*)?Actual Results?(?:\*\*)?\s*:\s*(.*)$",
+            block,
+            re.IGNORECASE | re.MULTILINE,
+        )
+        status_match = re.search(
+            r"^\s*(?:[-*]\s*)?(?:\*\*)?Test Status(?:\*\*)?\s*:\s*(.*)$",
+            block,
+            re.IGNORECASE | re.MULTILINE,
+        )
+        evidence_match = re.search(
+            r"^\s*(?:[-*]\s*)?(?:\*\*)?(?:Objective Evidence|Evidence) Reference"
+            r"(?:\*\*)?\s*:\s*(.*)$",
+            block,
+            re.IGNORECASE | re.MULTILINE,
+        )
+        records.append(
+            {
+                "id": case_id,
+                "block": block,
+                "requirements": requirement_ids,
+                "expected": expected_match.group(1).strip() if expected_match else "",
+                "actual": actual_match.group(1).strip() if actual_match else "",
+                "status": status_match.group(1).strip() if status_match else "",
+                "evidence": evidence_match.group(1).strip() if evidence_match else "",
+            }
+        )
+    return records
+
+
+def _meaningful_value(value: str) -> bool:
+    return bool(value.strip()) and value.strip().casefold() not in {
+        "not provided",
+        "not executed",
+        "not executed; no result supplied",
+        "pending",
+        "n/a",
+        "none",
+        "omit until supplied in execution records",
+    }
+
+
+def _source_supports_execution_record(document_context: str, case: dict[str, str]) -> bool:
+    if not document_context or not re.search(
+        rf"\b{re.escape(case['id'])}\b", document_context, re.IGNORECASE
+    ):
+        return False
+    claims = [case["actual"], case["status"], case["evidence"]]
+    substantive_claims = [claim for claim in claims if _meaningful_value(claim)]
+    if not substantive_claims:
+        return True
+    normalized_context = re.sub(r"\s+", " ", document_context).casefold()
+    return all(
+        re.sub(r"\s+", " ", claim).casefold() in normalized_context
+        for claim in substantive_claims
+    )
+
+
+def _sanitize_unsubstantiated_execution_claims(
+    protocol: str, document_context: str
+) -> tuple[str, list[str]]:
+    records = _case_records(protocol)
+    findings = []
+    for case in records:
+        claims = [case["actual"], case["status"], case["evidence"]]
+        has_execution_claim = any(_meaningful_value(claim) for claim in claims)
+        if has_execution_claim and not _source_supports_execution_record(document_context, case):
+            findings.append(
+                f"{case['id']}: unsupported execution result, status, or evidence claim "
+                "was replaced with Not Executed / Not provided."
+            )
+            protocol = protocol.replace(case["block"], _mark_cases_not_executed(case["block"]), 1)
+    return protocol, findings
+
+
+def _sanitize_summary_execution_claims(
+    report: str, document_context: str
+) -> tuple[str, list[str]]:
+    outcome_pattern = re.compile(
+        r"\b(?:tests?|test cases?|verification|execution)\b.{0,100}\b"
+        r"(?:passed|failed|were executed|have been executed|completed|successful)\b"
+        r"|\b(?:test )?coverage\s*(?:is|:)\s*\d+(?:\.\d+)?\s*%"
+        r"|\b(?:no|\d+)\s+(?:open )?(?:defects?|bugs?)\s+(?:were )?"
+        r"(?:found|reported|open|closed)\b"
+        r"|\b(?:execution|test|verification) status\s*:\s*"
+        r"(?:passed|failed|complete|completed|executed)\b",
+        re.IGNORECASE,
+    )
+    source = re.sub(r"\s+", " ", document_context).casefold()
+    findings = []
+    sentences = re.split(r"(?<=[.!?])\s+", report)
+    sanitized = []
+    for sentence in sentences:
+        if outcome_pattern.search(sentence) and re.sub(
+            r"\s+", " ", sentence
+        ).strip().casefold() not in source:
+            findings.append(
+                f"Unsupported execution summary was removed: {sentence.strip()}"
+            )
+            sanitized.append(
+                "Execution claim omitted because supporting source evidence was not supplied."
+            )
+        else:
+            sanitized.append(sentence)
+    return " ".join(sanitized), findings
+
+
+def _matrix_column_values(matrix: str, column_name: str) -> list[str]:
+    lines = matrix.splitlines()
+    for index, line in enumerate(lines):
+        if "|" not in line:
+            continue
+        headers = [cell.strip().casefold() for cell in line.strip().strip("|").split("|")]
+        if column_name.casefold() not in headers:
+            continue
+        column_index = headers.index(column_name.casefold())
+        values = []
+        for row in lines[index + 1:]:
+            if "|" not in row:
+                if values:
+                    break
+                continue
+            cells = [cell.strip() for cell in row.strip().strip("|").split("|")]
+            if len(cells) != len(headers) or all(
+                re.fullmatch(r":?-{3,}:?", cell) for cell in cells
+            ):
+                continue
+            values.append(cells[column_index])
+        return values
+    return []
+
+
+def _matrix_case_ids(matrix: str) -> list[str]:
+    return list(dict.fromkeys(
+        case_id
+        for value in _matrix_column_values(matrix, "Test Case ID")
+        for case_id in _test_case_ids(value)
+    ))
+
+
+def _case_fingerprint(case: dict[str, str]) -> str:
+    value = case["block"]
+    value = re.sub(r"^#{1,6}\s+.*$", "", value, flags=re.MULTILINE)
+    value = re.sub(r"\b(?:TC|REQ-(?:F|NF))-[A-Z0-9-]+\b", "", value, flags=re.IGNORECASE)
+    value = re.sub(
+        r"^\s*(?:[-*]\s*)?(?:\*\*)?(?:Test Case ID|Linked Requirement ID|"
+        r"Requirement ID|Actual Results?|Test Status|(?:Objective )?Evidence Reference)"
+        r"(?:\*\*)?\s*:.*$",
+        "",
+        value,
+        flags=re.IGNORECASE | re.MULTILINE,
+    )
+    value = re.sub(r"[^a-z0-9]+", " ", value.casefold())
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _validate_document_quality(
+    topic: str,
+    mode: DocumentationMode | str,
+    documents: dict[str, str],
+    requirements: str,
+    risks: str,
+    document_context: str,
+    execution_findings: list[str] | None = None,
+) -> dict:
+    mode = DocumentationMode(mode)
+    profile = DOCUMENT_MODE_PROFILES[mode]
+    protocol = next(
+        (text for name, text in documents.items() if "protocol" in name.casefold()),
+        "",
+    )
+    matrix = next(
+        (text for name, text in documents.items() if "traceability" in name.casefold()),
+        "",
+    )
+    cases = _case_records(protocol)
+    case_ids = [case["id"] for case in cases]
+    duplicate_ids = sorted({case_id for case_id in case_ids if case_ids.count(case_id) > 1})
+    valid_requirements = set(_requirement_ids(requirements))
+    referenced_requirements = {
+        requirement_id for case in cases for requirement_id in case["requirements"]
+    }
+    invalid_requirement_refs = sorted(referenced_requirements - valid_requirements)
+    unlinked_cases = sorted(
+        case["id"] for case in cases if not case["requirements"]
+    )
+    matrix_case_ids = _matrix_case_ids(matrix)
+    unknown_matrix_cases = sorted(set(matrix_case_ids) - set(case_ids))
+    unmapped_cases = sorted(set(case_ids) - set(matrix_case_ids))
+    matrix_has_case_column = any(
+        "test case id" in [cell.strip().casefold() for cell in line.strip().strip("|").split("|")]
+        for line in matrix.splitlines()
+        if "|" in line
+    )
+    matrix_requirements = {
+        requirement_id
+        for value in _matrix_column_values(matrix, "Requirement ID")
+        for requirement_id in _requirement_ids(value)
+    }
+    untested_requirements = sorted(valid_requirements - referenced_requirements)
+    requirements_missing_from_matrix = sorted(valid_requirements - matrix_requirements)
+
+    fingerprints: dict[str, list[str]] = {}
+    for case in cases:
+        fingerprint = _case_fingerprint(case)
+        if len(fingerprint) >= 12:
+            fingerprints.setdefault(fingerprint, []).append(case["id"])
+    duplicate_cases = [
+        sorted(ids) for ids in fingerprints.values() if len(ids) > 1
+    ]
+
+    expectations: dict[str, set[str]] = {}
+    for text in documents.values():
+        for case in _case_records(text):
+            if case["expected"]:
+                normalized = re.sub(r"\s+", " ", case["expected"]).strip().casefold()
+                expectations.setdefault(case["id"], set()).add(normalized)
+    expectation_conflicts = sorted(
+        case_id for case_id, values in expectations.items() if len(values) > 1
+    )
+    missing_expectations = sorted(
+        case["id"] for case in cases if not case["expected"]
+    )
+
+    supported_risk_ids = set(
+        re.findall(r"\b(?:RISK|RC)-[A-Z0-9]+(?:-[A-Z0-9]+)*\b", risks)
+    ) if profile["medical_device"] else set()
+    matrix_risk_ids = {
+        risk_id
+        for column in ("Risk Reference", "Risk Control")
+        for value in _matrix_column_values(matrix, column)
+        for risk_id in re.findall(r"\b(?:RISK|RC)-[A-Z0-9]+(?:-[A-Z0-9]+)*\b", value)
+    } if profile["medical_device"] else set()
+    protocol_risk_ids = set(
+        re.findall(r"\b(?:RISK|RC)-[A-Z0-9]+(?:-[A-Z0-9]+)*\b", protocol)
+    ) if profile["medical_device"] else set()
+    invalid_risk_refs = sorted(
+        (protocol_risk_ids | matrix_risk_ids) - supported_risk_ids
+    )
+    untraced_risk_controls = sorted(
+        risk_id for risk_id in supported_risk_ids
+        if risk_id.startswith("RC-") and risk_id not in matrix_risk_ids
+    )
+    unlinked_risk_controls = sorted(
+        risk_id for risk_id in supported_risk_ids
+        if risk_id.startswith("RC-") and risk_id not in protocol_risk_ids
+    )
+
+    expected_titles = {
+        filename: title for filename, title in profile["documents"]
+    }
+    metadata_issues = []
+    for filename, title in expected_titles.items():
+        text = documents.get(filename, "")
+        if not text.startswith(
+            f"# {title}\n\nProject: {topic}\n\nDocumentation Mode: {mode.value}\n"
+        ):
+            metadata_issues.append(filename)
+
+    execution_findings = execution_findings or []
+    checks = [
+        {
+            "id": "unique_test_case_identifiers",
+            "status": "FAIL" if duplicate_ids else ("PASS" if case_ids else "REVIEW"),
+            "summary": "Test-case identifiers are unique." if case_ids and not duplicate_ids else "Test-case identifiers are duplicated or unavailable.",
+            "findings": duplicate_ids or ([] if case_ids else ["No identifiable test cases were found."]),
+        },
+        {
+            "id": "valid_requirement_references",
+            "status": "FAIL" if invalid_requirement_refs else ("REVIEW" if unlinked_cases else "PASS"),
+            "summary": "Test cases reference extracted requirements." if not invalid_requirement_refs and not unlinked_cases else "Requirement links require review.",
+            "findings": [*(f"Unknown requirement: {item}" for item in invalid_requirement_refs), *(f"{item} has no requirement reference." for item in unlinked_cases)],
+        },
+        {
+            "id": "traceability_matrix_test_cases",
+            "status": "FAIL" if unknown_matrix_cases else ("REVIEW" if unmapped_cases or not matrix_has_case_column or not case_ids else "PASS"),
+            "summary": "Matrix test-case references match protocol cases." if not unknown_matrix_cases and not unmapped_cases and matrix_has_case_column and case_ids else "Matrix-to-protocol test-case coverage requires review.",
+            "findings": [*(f"Matrix references unknown case: {item}" for item in unknown_matrix_cases), *(f"Protocol case is missing from matrix: {item}" for item in unmapped_cases), *([] if matrix_has_case_column else ["Traceability matrix has no Test Case ID column."]), *([] if case_ids else ["No protocol test cases are available to map."])],
+        },
+        {
+            "id": "expectation_consistency",
+            "status": "FAIL" if expectation_conflicts else ("REVIEW" if missing_expectations else "PASS"),
+            "summary": "Repeated test expectations are consistent." if not expectation_conflicts and not missing_expectations else "Test expectations are inconsistent or missing.",
+            "findings": [*(f"Conflicting expected results for {item}." for item in expectation_conflicts), *(f"Expected result missing for {item}." for item in missing_expectations)],
+        },
+        {
+            "id": "duplicate_test_cases",
+            "status": "FAIL" if duplicate_cases else "PASS",
+            "summary": "No duplicate test-case definitions were detected." if not duplicate_cases else "Potential duplicate test cases were detected.",
+            "findings": [", ".join(ids) for ids in duplicate_cases],
+        },
+        {
+            "id": "requirements_coverage",
+            "status": "REVIEW" if untested_requirements or requirements_missing_from_matrix or not valid_requirements else "PASS",
+            "summary": "All extracted requirements are represented in test cases and the matrix." if valid_requirements and not untested_requirements and not requirements_missing_from_matrix else "Requirements are missing or need coverage and matrix review.",
+            "findings": [*(f"No test case covers {item}." for item in untested_requirements), *(f"Matrix omits {item}." for item in requirements_missing_from_matrix), *([] if valid_requirements else ["No requirement identifiers were extracted."])],
+        },
+        {
+            "id": "execution_results_supported",
+            "status": "REVIEW" if execution_findings else "PASS",
+            "summary": "No unsupported execution claims remain." if not execution_findings else "Unsupported execution claims were removed and require user review.",
+            "findings": execution_findings,
+        },
+        {
+            "id": "medical_risk_control_traceability",
+            "status": (
+                "FAIL" if invalid_risk_refs else
+                "REVIEW" if profile["medical_device"] and (untraced_risk_controls or unlinked_risk_controls) else
+                "PASS"
+            ),
+            "summary": "Supplied risk-control references are traceable." if not invalid_risk_refs and not untraced_risk_controls and not unlinked_risk_controls else "Risk-control references are unknown or incompletely linked.",
+            "findings": [*(f"Protocol references unknown risk item: {item}" for item in invalid_risk_refs), *(f"Risk control missing from matrix: {item}" for item in untraced_risk_controls), *(f"Risk control not linked to a protocol case: {item}" for item in unlinked_risk_controls)],
+        },
+        {
+            "id": "document_metadata_consistency",
+            "status": "FAIL" if metadata_issues else "PASS",
+            "summary": "Project, mode, and document-title metadata are consistent." if not metadata_issues else "Document metadata is missing or inconsistent.",
+            "findings": metadata_issues,
+        },
+    ]
+    status = "REVIEW_REQUIRED" if any(check["status"] != "PASS" for check in checks) else "PASS"
+    return {
+        "status": status,
+        "documentation_mode": mode.value,
+        "project": topic,
+        "review_required": status != "PASS",
+        "checks": checks,
+    }
+
+
+def _markdown_runs(paragraph, text: str) -> None:
+    for segment in re.split(r"(\*\*.*?\*\*|`.*?`|\*.*?\*)", text):
+        if not segment:
+            continue
+        if segment.startswith("**") and segment.endswith("**"):
+            paragraph.add_run(segment[2:-2]).bold = True
+        elif segment.startswith("`") and segment.endswith("`"):
+            run = paragraph.add_run(segment[1:-1])
+            run.font.name = "Consolas"
+        elif segment.startswith("*") and segment.endswith("*"):
+            paragraph.add_run(segment[1:-1]).italic = True
+        else:
+            paragraph.add_run(segment)
+
+
+def _markdown_table_rows(lines: list[str]) -> list[list[str]]:
+    rows = [
+        [cell.strip() for cell in line.strip().strip("|").split("|")]
+        for line in lines
+    ]
+    return [
+        row for row in rows
+        if row and not all(re.fullmatch(r":?-{3,}:?", cell) for cell in row)
+    ]
+
+
+def _write_docx(path: Path, title: str, project: str, mode: DocumentationMode, content: str) -> None:
+    document = Document()
+    document.core_properties.title = title
+    document.core_properties.subject = f"{mode.value} test documentation"
+    document.core_properties.author = "Test Strategy Protocol Generator"
+    document.core_properties.keywords = f"{project}, {mode.value}"
+    document.add_heading(title, level=0)
+    document.add_paragraph(f"Project: {project}")
+    document.add_paragraph(f"Documentation Mode: {mode.value}")
+
+    lines = content.splitlines()
+    index = 0
+    while index < len(lines):
+        line = lines[index].strip()
+        if not line:
+            index += 1
+            continue
+        if line.startswith("|"):
+            table_lines = []
+            while index < len(lines) and lines[index].strip().startswith("|"):
+                table_lines.append(lines[index])
+                index += 1
+            rows = _markdown_table_rows(table_lines)
+            if rows:
+                table = document.add_table(rows=1, cols=len(rows[0]))
+                table.style = "Light Shading Accent 1"
+                for cell, value in zip(table.rows[0].cells, rows[0]):
+                    cell.text = re.sub(r"\*\*(.*?)\*\*", r"\1", value)
+                    for run in cell.paragraphs[0].runs:
+                        run.bold = True
+                for values in rows[1:]:
+                    cells = table.add_row().cells
+                    for cell, value in zip(cells, values):
+                        cell.text = re.sub(r"\*\*(.*?)\*\*", r"\1", value)
+            continue
+        heading = re.match(r"^(#{1,6})\s+(.*)$", line)
+        if heading:
+            document.add_heading(
+                re.sub(r"\*\*(.*?)\*\*", r"\1", heading.group(2)),
+                level=min(len(heading.group(1)), 3),
+            )
+        elif re.match(r"^[-*]\s+", line):
+            paragraph = document.add_paragraph(style="List Bullet")
+            _markdown_runs(paragraph, re.sub(r"^[-*]\s+", "", line))
+        elif re.match(r"^\d+[.)]\s+", line):
+            paragraph = document.add_paragraph(style="List Number")
+            _markdown_runs(paragraph, re.sub(r"^\d+[.)]\s+", "", line))
+        else:
+            paragraph = document.add_paragraph()
+            _markdown_runs(paragraph, line)
+        index += 1
+
+    document.save(path)
+
+
+def _write_matrix_xlsx(
+    path: Path, title: str, project: str, mode: DocumentationMode, content: str
+) -> None:
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "Traceability Matrix"
+    worksheet.append([title])
+    worksheet.append([f"Project: {project}"])
+    worksheet.append([f"Documentation Mode: {mode.value}"])
+    worksheet.append([])
+
+    table_lines = []
+    collecting = False
+    for line in content.splitlines():
+        if line.strip().startswith("|"):
+            collecting = True
+            table_lines.append(line)
+        elif collecting:
+            break
+    rows = _markdown_table_rows(table_lines)
+    if rows:
+        for row in rows:
+            worksheet.append(row)
+        header_row = 5
+        for cell in worksheet[header_row]:
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = PatternFill("solid", fgColor="1F4E78")
+            cell.alignment = Alignment(wrap_text=True, vertical="top")
+        worksheet.freeze_panes = "A6"
+        worksheet.auto_filter.ref = worksheet.dimensions
+        for column in worksheet.columns:
+            width = min(
+                max(max(len(str(cell.value or "")) for cell in column) + 2, 14),
+                48,
+            )
+            worksheet.column_dimensions[column[0].column_letter].width = width
+            for cell in column:
+                cell.alignment = Alignment(wrap_text=True, vertical="top")
+    else:
+        worksheet.append(["Traceability matrix content"])
+        worksheet.append([content or "Not provided; review required."])
+        worksheet.column_dimensions["A"].width = 100
+        worksheet["A5"].font = Font(bold=True)
+        worksheet["A6"].alignment = Alignment(wrap_text=True, vertical="top")
+    workbook.properties.title = title
+    workbook.properties.subject = f"{mode.value} traceability matrix"
+    workbook.properties.creator = "Test Strategy Protocol Generator"
+    workbook.properties.keywords = f"{project}, {mode.value}, traceability"
+    workbook.save(path)
+
+
+def _build_document_contents(
+    task_outputs, result, mode, document_context="", return_execution_findings=False
+):
     """Build the four deliverables through one shared, mode-profiled pipeline."""
     profile = DOCUMENT_MODE_PROFILES[DocumentationMode(mode)]
     outputs = _task_outputs_by_name(task_outputs)
@@ -557,8 +1079,6 @@ def _build_document_contents(task_outputs, result, mode, document_context=""):
     protocol_parts = [outputs["protocol"], test_cases]
     if profile["medical_device"]:
         protocol = "\n\n".join(part for part in protocol_parts if part)
-        if not execution_evidence:
-            protocol = _mark_cases_not_executed(protocol)
         if not re.search(r"^\s*[-*]\s*\*\*Test Case ID:", protocol, re.MULTILINE):
             protocol += (
                 "\n\n### Test Case: Not provided\n\n"
@@ -572,12 +1092,20 @@ def _build_document_contents(task_outputs, result, mode, document_context=""):
                 "- **Test Status:** Not Executed\n"
                 "- **Objective Evidence Reference:** Not provided"
             )
-        if not execution_evidence:
-            protocol = _mark_cases_not_executed(protocol)
     else:
         protocol = "\n\n".join(part for part in protocol_parts if part)
 
+    protocol, execution_findings = _sanitize_unsubstantiated_execution_claims(
+        protocol, document_context
+    )
+    if profile["medical_device"] and not execution_evidence:
+        protocol = _mark_cases_not_executed(protocol)
+
     report = outputs["reporting"] or getattr(result, "raw", None) or str(result)
+    report, summary_execution_findings = _sanitize_summary_execution_claims(
+        report, document_context
+    )
+    execution_findings.extend(summary_execution_findings)
     if profile["medical_device"]:
         summary_sections = (
             "## Verification Scope\n\n"
@@ -623,6 +1151,8 @@ def _build_document_contents(task_outputs, result, mode, document_context=""):
         )
 
     documents = [plan, protocol, matrix, summary]
+    if return_execution_findings:
+        return documents, execution_findings
     return documents
 
 
@@ -637,39 +1167,56 @@ def _write_document_package(
     mode = DocumentationMode(documentation_mode)
     profile = DOCUMENT_MODE_PROFILES[mode]
     documents = profile["documents"]
-    contents = _build_document_contents(
+    contents, execution_findings = _build_document_contents(
         task_outputs,
         result,
         mode,
         document_context,
+        return_execution_findings=True,
+    )
+
+    document_map = {
+        filename: (
+            f"# {title}\n\nProject: {topic}\n\nDocumentation Mode: {mode.value}\n\n"
+            f"{content.strip()}\n"
+        )
+        for (filename, title), content in zip(documents, contents)
+    }
+    outputs = _task_outputs_by_name(task_outputs)
+    validation_report = _validate_document_quality(
+        topic,
+        mode,
+        document_map,
+        outputs["requirements"],
+        outputs["risk"],
+        document_context,
+        execution_findings,
     )
 
     safe_topic = re.sub(r"[^a-zA-Z0-9]+", "-", topic).strip("-").lower() or "software-project"
     output_dir = Path(tempfile.mkdtemp(prefix=f"{safe_topic}-test-docs-"))
     generated_files = []
-
-    for (filename, title), content in zip(documents, contents):
+    for (filename, title), document_text in zip(documents, document_map.values()):
         document_path = output_dir / filename
-        document_path.write_text(
-            f"# {title}\n\nProject: {topic}\n\n{content.strip()}\n",
-            encoding="utf-8",
-        )
+        content = contents[len(generated_files)]
+        if document_path.suffix.casefold() == ".docx":
+            _write_docx(document_path, title, topic, mode, content)
+        elif document_path.suffix.casefold() == ".xlsx":
+            _write_matrix_xlsx(document_path, title, topic, mode, content)
+        else:
+            raise ValueError(f"Unsupported document export format: {document_path.suffix}")
         generated_files.append(str(document_path))
-
-    readme_path = output_dir / "README.md"
-    readme_path.write_text(
-        "# Generated Test Documentation\n\n" + "\n".join(
-            f"- {filename}: {title}" for filename, title in documents
-        ) + "\n",
-        encoding="utf-8",
-    )
 
     archive_path = output_dir.parent / f"{output_dir.name}.zip"
     with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for file_path in [*generated_files, str(readme_path)]:
+        for file_path in generated_files:
             archive.write(file_path, arcname=Path(file_path).name)
+        archive.writestr(
+            "validation_report.json",
+            json.dumps(validation_report, indent=2, ensure_ascii=False) + "\n",
+        )
 
-    return generated_files, str(archive_path)
+    return generated_files, str(archive_path), validation_report
 
 
 def _run_generation_pipeline(topic, uploaded_files, documentation_mode):
@@ -677,17 +1224,22 @@ def _run_generation_pipeline(topic, uploaded_files, documentation_mode):
     document_context = _build_document_context(uploaded_files)
     inputs = _build_crew_inputs(topic.strip(), document_context, mode)
     result = TestStrategyProtocolGenerator().crew().kickoff(inputs=inputs)
-    document_files, archive_file = _write_document_package(
+    document_files, archive_file, validation_report = _write_document_package(
         result,
         topic.strip(),
         mode,
         document_context,
     )
+    review_count = sum(
+        check["status"] != "PASS" for check in validation_report["checks"]
+    )
     status = (
         f"Generated {len(DOCUMENT_MODE_PROFILES[mode]['documents'])} "
-        f"separate testing documents for {topic.strip()}."
+        f"separate testing documents for {topic.strip()}. "
+        f"Quality validation: {validation_report['status']} "
+        f"({review_count} check(s) require review)."
     )
-    return result, document_files, archive_file, status
+    return result, document_files, archive_file, status, validation_report
 
 
 def _build_crew_inputs(
@@ -749,7 +1301,7 @@ def run(
     Run the crew with a default or supplied topic.
     """
     try:
-        result, _, _, _ = _run_generation_pipeline(topic, [], documentation_mode)
+        result, _, _, _, _ = _run_generation_pipeline(topic, [], documentation_mode)
         return result
     except Exception as e:
         raise Exception(f"An error occurred while running the crew: {e}")
@@ -765,12 +1317,12 @@ def launch_gradio_app():
         if not all_documents_added:
             raise gr.Error("Please confirm that all required documents were uploaded.")
 
-        _, document_files, archive_file, status = _run_generation_pipeline(
+        _, document_files, archive_file, status, validation_report = _run_generation_pipeline(
             topic,
             uploaded_files,
             documentation_mode,
         )
-        return document_files, archive_file, status
+        return document_files, archive_file, status, validation_report
 
     with gr.Blocks(title="Test Strategy Protocol Generator") as demo:
         gr.Markdown("# Test Strategy Protocol Generator")
@@ -799,11 +1351,12 @@ def launch_gradio_app():
         documents_output = gr.Files(label="Individual Documents")
         archive_output = gr.File(label="Download All Documents (.zip)")
         status_output = gr.Textbox(label="Generation Status", interactive=False)
+        validation_output = gr.JSON(label="Document Quality Validation")
 
         submit.click(
             fn=generate_strategy,
             inputs=[topic, uploaded_files, all_documents_added, documentation_mode],
-            outputs=[documents_output, archive_output, status_output],
+            outputs=[documents_output, archive_output, status_output, validation_output],
         )
 
     return demo

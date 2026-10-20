@@ -1,13 +1,19 @@
+from io import BytesIO
+import json
 import unittest
 import zipfile
 from pathlib import Path
 from unittest.mock import patch
+
+from docx import Document
+from openpyxl import load_workbook
 
 from test_strategy_protocol_generator.main import (
     DocumentationMode,
     GENERAL_TEST_DESIGN_OUTPUT_INSTRUCTIONS,
     GENERAL_REQUIREMENTS_OUTPUT_INSTRUCTIONS,
     GENERAL_SOFTWARE_DOCUMENTS,
+    DOCUMENT_MODE_PROFILES,
     MEDICAL_DEVICE_MODE_INSTRUCTIONS,
     MEDICAL_DEVICE_PROTOCOL_INSTRUCTIONS,
     MEDICAL_DEVICE_SOFTWARE_DOCUMENTS,
@@ -22,8 +28,34 @@ from test_strategy_protocol_generator.main import (
     _mark_cases_not_executed,
     _remove_markdown_section,
     _run_generation_pipeline,
+    _validate_document_quality,
     _write_document_package,
 )
+
+
+def _read_docx(content: bytes) -> str:
+    document = Document(BytesIO(content))
+    blocks = [paragraph.text for paragraph in document.paragraphs]
+    blocks.extend(
+        " | ".join(cell.text for cell in row.cells)
+        for table in document.tables
+        for row in table.rows
+    )
+    return "\n".join(blocks)
+
+
+def _read_xlsx(content: bytes) -> str:
+    workbook = load_workbook(BytesIO(content), read_only=True, data_only=True)
+    worksheet = workbook.active
+    return "\n".join(
+        " | ".join(str(value or "") for value in row)
+        for row in worksheet.iter_rows(values_only=True)
+    )
+
+
+def _zip_members(content: bytes) -> list[str]:
+    with zipfile.ZipFile(BytesIO(content)) as archive:
+        return archive.namelist()
 
 
 class TaskOutput:
@@ -188,15 +220,21 @@ class BuildCrewInputsTests(unittest.TestCase):
                     patch("test_strategy_protocol_generator.main._write_document_package") as writer,
                 ):
                     crew_class.return_value.crew.return_value.kickoff.return_value = result
-                    writer.return_value = (["document.md"], "documents.zip")
+                    writer.return_value = (
+                        ["document.md"],
+                        "documents.zip",
+                        {"status": "PASS", "checks": []},
+                    )
 
-                    returned_result, files, archive, status = _run_generation_pipeline(
+                    returned_result, files, archive, status, report = _run_generation_pipeline(
                         " Example ", [], mode
                     )
 
                     self.assertIs(returned_result, result)
                     self.assertEqual((files, archive), (["document.md"], "documents.zip"))
                     self.assertIn("Generated 4", status)
+                    self.assertIn("PASS", status)
+                    self.assertEqual(report["status"], "PASS")
                     kickoff_inputs = crew_class.return_value.crew.return_value.kickoff.call_args.kwargs["inputs"]
                     self.assertEqual(kickoff_inputs["documentation_mode"], mode.value)
                     writer.assert_called_once()
@@ -231,6 +269,107 @@ class DocumentPackageTests(unittest.TestCase):
             TaskOutput("Executive conclusions"),
         ]
 
+    def test_quality_report_flags_all_required_validation_categories(self):
+        mode = DocumentationMode.MEDICAL_DEVICE_SOFTWARE
+        documents = {
+            filename: (
+                f"# {title}\n\nProject: Example project\n\n"
+                f"Documentation Mode: {mode.value}\n\n"
+            )
+            for filename, title in MEDICAL_DEVICE_SOFTWARE_DOCUMENTS
+        }
+        documents["Software_Verification_Protocol.docx"] += (
+            "### TC-1\n"
+            "- **Linked Requirement ID:** REQ-F-999\n"
+            "- **Linked Risk Control ID:** RC-404\n"
+            "- **Objective:** Save an item\n"
+            "- **Test Steps:** Save an item\n"
+            "- **Expected Results:** Item is saved\n"
+            "- **Actual Results:** Item saved\n"
+            "- **Test Status:** Passed\n"
+            "- **Objective Evidence Reference:** fake-run\n\n"
+            "### TC-2\n"
+            "- **Linked Requirement ID:** REQ-F-001\n"
+            "- **Linked Risk Control ID:** RC-404\n"
+            "- **Objective:** Save an item\n"
+            "- **Test Steps:** Save an item\n"
+            "- **Expected Results:** Item is saved\n\n"
+            "### TC-1\n"
+            "- **Linked Requirement ID:** REQ-F-001\n"
+            "- **Linked Risk Control ID:** RC-404\n"
+            "- **Objective:** Save an item\n"
+            "- **Test Steps:** Save an item\n"
+            "- **Expected Results:** Item is overwritten\n"
+        )
+        documents["Requirements_Risk_Traceability_Matrix.xlsx"] += (
+            "| Requirement ID | Risk Reference | Risk Control | Test Case ID | "
+            "Verification Status | Evidence Reference |\n"
+            "|---|---|---|---|---|---|\n"
+            "| REQ-F-001 | RISK-1 | RC-404 | TC-404 | Pending | Not provided |\n"
+        )
+        documents["Software_Verification_Summary_Report.docx"] += (
+            "### TC-1\n- **Expected Results:** A different result\n"
+        )
+        documents["Software_Test_Plan.docx"] = documents[
+            "Software_Test_Plan.docx"
+        ].replace("Project: Example project", "Project: Different project")
+
+        report = _validate_document_quality(
+            "Example project",
+            mode,
+            documents,
+            "REQ-F-001: Create item\nREQ-NF-001: Load in two seconds",
+            "RISK-1 with control RC-1",
+            "",
+            ["TC-1: unsupported execution claim removed."],
+        )
+
+        self.assertEqual(len(report["checks"]), 9)
+        self.assertEqual(report["status"], "REVIEW_REQUIRED")
+        check_status = {item["id"]: item["status"] for item in report["checks"]}
+        self.assertEqual(check_status["unique_test_case_identifiers"], "FAIL")
+        self.assertEqual(check_status["valid_requirement_references"], "FAIL")
+        self.assertEqual(check_status["traceability_matrix_test_cases"], "FAIL")
+        self.assertEqual(check_status["expectation_consistency"], "FAIL")
+        self.assertEqual(check_status["duplicate_test_cases"], "FAIL")
+        self.assertEqual(check_status["requirements_coverage"], "REVIEW")
+        self.assertEqual(check_status["execution_results_supported"], "REVIEW")
+        self.assertEqual(check_status["medical_risk_control_traceability"], "FAIL")
+        self.assertEqual(check_status["document_metadata_consistency"], "FAIL")
+
+    def test_valid_document_set_passes_quality_validation(self):
+        mode = DocumentationMode.GENERAL_SOFTWARE
+        documents = {
+            filename: (
+                f"# {title}\n\nProject: Example project\n\n"
+                f"Documentation Mode: {mode.value}\n\n"
+            )
+            for filename, title in GENERAL_SOFTWARE_DOCUMENTS
+        }
+        documents["Software_Test_Protocol.docx"] += (
+            "### TC-1\n"
+            "- **Linked Requirement ID:** REQ-F-001\n"
+            "- **Test Steps:** Create an item\n"
+            "- **Expected Results:** Item is created\n"
+        )
+        documents["Requirements_Traceability_Matrix.xlsx"] += (
+            "| Requirement ID | Test Case ID | Verification Status | Evidence Reference |\n"
+            "|---|---|---|---|\n"
+            "| REQ-F-001 | TC-1 | Pending | Not provided |\n"
+        )
+
+        report = _validate_document_quality(
+            "Example project",
+            mode,
+            documents,
+            "REQ-F-001: Create item",
+            "",
+            "",
+        )
+
+        self.assertEqual(report["status"], "PASS")
+        self.assertTrue(all(check["status"] == "PASS" for check in report["checks"]))
+
     def _write_package(
         self,
         mode=DocumentationMode.GENERAL_SOFTWARE,
@@ -252,7 +391,7 @@ class DocumentPackageTests(unittest.TestCase):
         )
 
     def test_general_mode_generates_exactly_four_core_documents(self):
-        files, archive_path = self._write_package()
+        files, archive_path, validation_report = self._write_package()
         try:
             generated_names = {Path(file_path).name for file_path in files}
             expected_names = {filename for filename, _ in GENERAL_SOFTWARE_DOCUMENTS}
@@ -262,11 +401,40 @@ class DocumentPackageTests(unittest.TestCase):
             with zipfile.ZipFile(archive_path) as archive:
                 archive_names = set(archive.namelist())
                 self.assertEqual(archive.testzip(), None)
-                self.assertEqual(archive_names, expected_names | {"README.md"})
-                plan = archive.read("01_software_test_plan.md").decode("utf-8")
-                protocol = archive.read("02_software_test_protocol.md").decode("utf-8")
-                matrix = archive.read("03_requirements_traceability_matrix.md").decode("utf-8")
-                summary = archive.read("04_software_test_summary_report.md").decode("utf-8")
+                self.assertEqual(
+                    archive_names,
+                    expected_names | {"validation_report.json"},
+                )
+                validation_json = json.loads(
+                    archive.read("validation_report.json").decode("utf-8")
+                )
+                plan = _read_docx(archive.read("Software_Test_Plan.docx"))
+                protocol = _read_docx(archive.read("Software_Test_Protocol.docx"))
+                matrix = _read_xlsx(archive.read("Requirements_Traceability_Matrix.xlsx"))
+                summary = _read_docx(
+                    archive.read("Software_Test_Summary_Report.docx")
+                )
+                self.assertIn(
+                    "word/document.xml",
+                    _zip_members(archive.read("Software_Test_Plan.docx")),
+                )
+                self.assertIn(
+                    "xl/workbook.xml",
+                    _zip_members(
+                        archive.read("Requirements_Traceability_Matrix.xlsx")
+                    ),
+                )
+                self.assertEqual(
+                    [Path(path).suffix for path in files],
+                    [".docx", ".docx", ".xlsx", ".docx"],
+                )
+                matrix_workbook = load_workbook(
+                    BytesIO(archive.read("Requirements_Traceability_Matrix.xlsx")),
+                    read_only=True,
+                    data_only=True,
+                )
+                self.assertEqual(matrix_workbook.active["A5"].value, "Requirement ID")
+                self.assertEqual(matrix_workbook.active["B5"].value, "Test Case ID")
 
             self.assertIn("Project scope and acceptance criteria", plan)
             self.assertIn("Test strategy and environment", plan)
@@ -275,7 +443,7 @@ class DocumentPackageTests(unittest.TestCase):
             self.assertIn("TC-1: Verify inventory item creation.", protocol)
             self.assertNotIn("| REQ-F-001 | TC-1 | Pending |", protocol)
             self.assertIn(
-                "| REQ-F-001 | TC-1 | Pending | Not provided |",
+                "REQ-F-001 | TC-1 | Pending | Not provided",
                 matrix,
             )
             self.assertNotIn("TC-1: Verify inventory item creation.", matrix)
@@ -284,6 +452,92 @@ class DocumentPackageTests(unittest.TestCase):
             self.assertIn("Defects:", summary)
             self.assertIn("Not measured", summary)
             self.assertIn("Conclusion:", summary)
+            self.assertEqual(validation_json, validation_report)
+            self.assertEqual(len(validation_report["checks"]), 9)
+        finally:
+            self._remove_package(files, archive_path)
+
+    def test_unsupported_execution_claims_are_sanitized_before_export(self):
+        outputs = list(self.task_outputs)
+        outputs[6] = TaskOutput(
+            "## Requirements Traceability Matrix\n"
+            "| Requirement ID | Test Case ID | Verification Status | Evidence Reference |\n"
+            "| REQ-F-001 | TC-1 | Pending | Not provided |\n\n"
+            "## Detailed Test Cases\n"
+            "### TC-1\n"
+            "- **Linked Requirement ID:** REQ-F-001\n"
+            "- **Test Steps:** Create an inventory item\n"
+            "- **Expected Results:** Inventory item is created\n"
+            "- **Actual Results:** Inventory item was created\n"
+            "- **Test Status:** Passed\n"
+            "- **Objective Evidence Reference:** run-999"
+        )
+        outputs[9] = TaskOutput("All tests passed. Coverage is 100%.")
+        files, archive_path, report = self._write_package(task_outputs=outputs)
+        try:
+            protocol_path = next(
+                path for path in files if Path(path).name == "Software_Test_Protocol.docx"
+            )
+            protocol = _read_docx(Path(protocol_path).read_bytes())
+            summary_path = next(
+                path for path in files
+                if Path(path).name == "Software_Test_Summary_Report.docx"
+            )
+            summary = _read_docx(Path(summary_path).read_bytes())
+
+            self.assertNotIn("Inventory item was created", protocol)
+            self.assertIn("Actual Results: Not executed", protocol)
+            self.assertNotIn("All tests passed", summary)
+            self.assertNotIn("Coverage is 100%", summary)
+            execution_check = next(
+                check for check in report["checks"]
+                if check["id"] == "execution_results_supported"
+            )
+            self.assertEqual(execution_check["status"], "REVIEW")
+            self.assertIn("TC-1", execution_check["findings"][0])
+            self.assertTrue(any("Unsupported execution summary" in item for item in execution_check["findings"]))
+        finally:
+            self._remove_package(files, archive_path)
+
+    def test_medical_unsupported_execution_is_reported_before_export(self):
+        outputs = list(self.task_outputs)
+        outputs[4] = TaskOutput("RISK-1; RC-1")
+        outputs[6] = TaskOutput(
+            "## Requirements and Risk Traceability Matrix\n"
+            "| Requirement ID | Risk Reference | Risk Control | Test Case ID | "
+            "Verification Status | Evidence Reference |\n"
+            "|---|---|---|---|---|---|\n"
+            "| REQ-F-001 | RISK-1 | RC-1 | TC-1 | Not Executed | Not provided |\n\n"
+            "## Verification Test Cases\n"
+            "### TC-1\n"
+            "- **Linked Requirement ID:** REQ-F-001\n"
+            "- **Linked Risk Control ID:** RC-1\n"
+            "- **Expected Results:** Inventory item is created\n"
+            "- **Actual Results:** Inventory item was created\n"
+            "- **Test Status:** Passed\n"
+            "- **Objective Evidence Reference:** run-1"
+        )
+        files, archive_path, report = self._write_package(
+            DocumentationMode.MEDICAL_DEVICE_SOFTWARE,
+            task_outputs=outputs,
+        )
+        try:
+            protocol_path = next(
+                path
+                for path in files
+                if Path(path).name == "Software_Verification_Protocol.docx"
+            )
+            protocol = _read_docx(Path(protocol_path).read_bytes())
+            execution_check = next(
+                check
+                for check in report["checks"]
+                if check["id"] == "execution_results_supported"
+            )
+
+            self.assertNotIn("Inventory item was created", protocol)
+            self.assertIn("Actual Results: Not executed", protocol)
+            self.assertEqual(execution_check["status"], "REVIEW")
+            self.assertTrue(execution_check["findings"])
         finally:
             self._remove_package(files, archive_path)
 
@@ -305,7 +559,7 @@ class DocumentPackageTests(unittest.TestCase):
             "- **Test Status:** Not Executed\n"
             "- **Objective Evidence Reference:** Not provided"
         )
-        files, archive_path = self._write_package(
+        files, archive_path, validation_report = self._write_package(
             DocumentationMode.MEDICAL_DEVICE_SOFTWARE,
             task_outputs=medical_outputs,
         )
@@ -320,18 +574,36 @@ class DocumentPackageTests(unittest.TestCase):
             with zipfile.ZipFile(archive_path) as archive:
                 self.assertEqual(
                     set(archive.namelist()),
-                    expected_names | {"README.md"},
+                    expected_names | {"validation_report.json"},
                 )
-                plan = archive.read("01_software_test_plan.md").decode("utf-8")
-                protocol = archive.read(
-                    "02_software_verification_protocol.md"
-                ).decode("utf-8")
-                matrix = archive.read(
-                    "03_requirements_risk_traceability_matrix.md"
-                ).decode("utf-8")
-                summary = archive.read(
-                    "04_software_verification_summary_report.md"
-                ).decode("utf-8")
+                report_from_archive = json.loads(
+                    archive.read("validation_report.json").decode("utf-8")
+                )
+                plan = _read_docx(archive.read("Software_Test_Plan.docx"))
+                protocol = _read_docx(
+                    archive.read("Software_Verification_Protocol.docx")
+                )
+                matrix = _read_xlsx(
+                    archive.read("Requirements_Risk_Traceability_Matrix.xlsx")
+                )
+                summary = _read_docx(
+                    archive.read("Software_Verification_Summary_Report.docx")
+                )
+                self.assertIn(
+                    "xl/workbook.xml",
+                    _zip_members(
+                        archive.read("Requirements_Risk_Traceability_Matrix.xlsx")
+                    ),
+                )
+                medical_matrix = load_workbook(
+                    BytesIO(
+                        archive.read("Requirements_Risk_Traceability_Matrix.xlsx")
+                    ),
+                    read_only=True,
+                    data_only=True,
+                )
+                self.assertEqual(medical_matrix.active["A5"].value, "Requirement ID")
+                self.assertEqual(medical_matrix.active["C5"].value, "Risk Control")
 
             self.assertIn("Project scope and acceptance criteria", plan)
             for section in (
@@ -358,7 +630,7 @@ class DocumentPackageTests(unittest.TestCase):
             ):
                 self.assertIn(field, protocol)
             self.assertIn(
-                "| REQ-F-001 | RISK-1 | RC-1 | TC-1 | Pending / Not Verified | Not provided |",
+                "REQ-F-001 | RISK-1 | RC-1 | TC-1 | Pending / Not Verified | Not provided",
                 matrix,
             )
             self.assertNotIn("TC-1", summary.split("## Open Anomalies", 1)[0])
@@ -367,32 +639,34 @@ class DocumentPackageTests(unittest.TestCase):
             self.assertIn("Review and Approval", summary)
             self.assertIn("Not provided | Pending", summary)
             self.assertNotIn("Executive conclusions", summary)
+            self.assertEqual(validation_report["documentation_mode"], DocumentationMode.MEDICAL_DEVICE_SOFTWARE.value)
+            self.assertEqual(report_from_archive, validation_report)
         finally:
             self._remove_package(files, archive_path)
 
     def test_medical_device_mode_marks_missing_content_as_pending(self):
         empty_outputs = [TaskOutput("") for _ in range(10)]
-        files, archive_path = self._write_package(
+        files, archive_path, _ = self._write_package(
             DocumentationMode.MEDICAL_DEVICE_SOFTWARE,
             task_outputs=empty_outputs,
         )
         try:
             with zipfile.ZipFile(archive_path) as archive:
-                plan = archive.read("01_software_test_plan.md").decode("utf-8")
-                protocol = archive.read(
-                    "02_software_verification_protocol.md"
-                ).decode("utf-8")
-                matrix = archive.read(
-                    "03_requirements_risk_traceability_matrix.md"
-                ).decode("utf-8")
-                summary = archive.read(
-                    "04_software_verification_summary_report.md"
-                ).decode("utf-8")
+                plan = _read_docx(archive.read("Software_Test_Plan.docx"))
+                protocol = _read_docx(
+                    archive.read("Software_Verification_Protocol.docx")
+                )
+                matrix = _read_xlsx(
+                    archive.read("Requirements_Risk_Traceability_Matrix.xlsx")
+                )
+                summary = _read_docx(
+                    archive.read("Software_Verification_Summary_Report.docx")
+                )
 
             self.assertIn("Not provided; classification not determined.", plan)
-            self.assertIn("Test Case ID:** Not provided", protocol)
-            self.assertIn("Test Status:** Not Executed", protocol)
-            self.assertIn("Actual Results:** Not executed", protocol)
+            self.assertIn("Test Case ID: Not provided", protocol)
+            self.assertIn("Test Status: Not Executed", protocol)
+            self.assertIn("Actual Results: Not executed", protocol)
             self.assertIn("Pending / Not Verified", matrix)
             self.assertIn("Pending / Not Executed", summary)
             self.assertNotIn("PASS", summary)
@@ -407,15 +681,15 @@ class DocumentPackageTests(unittest.TestCase):
             "Test Status: Passed\n"
             "Objective Evidence Reference: run-123/screenshot.png"
         )
-        files, archive_path = self._write_package(
+        files, archive_path, _ = self._write_package(
             DocumentationMode.MEDICAL_DEVICE_SOFTWARE,
             document_context=execution_context,
         )
         try:
             with zipfile.ZipFile(archive_path) as archive:
-                summary = archive.read(
-                    "04_software_verification_summary_report.md"
-                ).decode("utf-8")
+                summary = _read_docx(
+                    archive.read("Software_Verification_Summary_Report.docx")
+                )
 
             self.assertIn("See supplied, test-case-linked execution evidence.", summary)
             self.assertIn("Project-Specific Summary", summary)
@@ -427,7 +701,6 @@ class DocumentPackageTests(unittest.TestCase):
     def _remove_package(files, archive_path):
         for file_path in files:
             Path(file_path).unlink(missing_ok=True)
-        (Path(files[0]).parent / "README.md").unlink(missing_ok=True)
         Path(files[0]).parent.rmdir()
         Path(archive_path).unlink(missing_ok=True)
 

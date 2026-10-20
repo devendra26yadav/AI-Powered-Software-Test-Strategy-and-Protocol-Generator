@@ -3963,12 +3963,16 @@ source = { editable = "." }
 dependencies = [
     { name = "crewai", extra = ["tools"] },
     { name = "gradio" },
+    { name = "openpyxl" },
+    { name = "python-docx" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "crewai", extras = ["tools"], specifier = ">=1.15.27,<2.0.0" },
     { name = "gradio", specifier = ">=4.36.0,<6.0.0" },
+    { name = "openpyxl", specifier = ">=3.1.5,<4.0.0" },
+    { name = "python-docx", specifier = ">=1.1.2,<2.0.0" },
 ]
 
 [[package]]
