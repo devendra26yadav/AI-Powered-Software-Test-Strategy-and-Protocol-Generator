@@ -6,6 +6,7 @@ import warnings
 import zipfile
 
 from datetime import datetime
+from enum import Enum
 from pathlib import Path
 
 import gradio as gr
@@ -13,6 +14,12 @@ import gradio as gr
 from test_strategy_protocol_generator.crew import TestStrategyProtocolGenerator
 
 warnings.filterwarnings("ignore", category=SyntaxWarning, module="pysbd")
+
+
+class DocumentationMode(str, Enum):
+    GENERAL_SOFTWARE = "General Software"
+    MEDICAL_DEVICE_SOFTWARE = "Medical Device Software"
+
 
 DOCUMENTS = [
     ("01_project_test_plan.md", "Project Test Plan"),
@@ -119,15 +126,32 @@ def _write_document_package(result, topic: str):
     return generated_files, str(archive_path)
 
 
-def run(topic: str = "Software Project"):
+def _build_crew_inputs(
+    topic: str,
+    document_context: str,
+    documentation_mode: DocumentationMode | str = DocumentationMode.GENERAL_SOFTWARE,
+):
+    mode = DocumentationMode(documentation_mode)
+    return {
+        "topic": topic,
+        "current_year": str(datetime.now().year),
+        "document_context": document_context,
+        "documentation_mode": mode.value,
+    }
+
+
+def run(
+    topic: str = "Software Project",
+    documentation_mode: DocumentationMode | str = DocumentationMode.GENERAL_SOFTWARE,
+):
     """
     Run the crew with a default or supplied topic.
     """
-    inputs = {
-        'topic': topic,
-        'current_year': str(datetime.now().year),
-        'document_context': 'No project documents were uploaded. Use the topic and general software testing practices only. State assumptions and do not assume a specific industry.'
-    }
+    inputs = _build_crew_inputs(
+        topic,
+        "No project documents were uploaded. Use the topic and general software testing practices only. State assumptions and do not assume a specific industry.",
+        documentation_mode,
+    )
 
     try:
         return TestStrategyProtocolGenerator().crew().kickoff(inputs=inputs)
@@ -138,7 +162,7 @@ def run(topic: str = "Software Project"):
 def launch_gradio_app():
     """Launch a simple Gradio UI for entering project details and uploading supporting documents."""
 
-    def generate_strategy(topic, uploaded_files, all_documents_added):
+    def generate_strategy(topic, uploaded_files, all_documents_added, documentation_mode):
         if not topic or not topic.strip():
             raise gr.Error("Please provide a project or technology topic.")
 
@@ -146,11 +170,7 @@ def launch_gradio_app():
             raise gr.Error("Please confirm that all required documents were uploaded.")
 
         document_context = _build_document_context(uploaded_files)
-        inputs = {
-            "topic": topic.strip(),
-            "current_year": str(datetime.now().year),
-            "document_context": document_context,
-        }
+        inputs = _build_crew_inputs(topic.strip(), document_context, documentation_mode)
 
         result = TestStrategyProtocolGenerator().crew().kickoff(inputs=inputs)
         document_files, archive_file = _write_document_package(result, topic.strip())
@@ -165,6 +185,11 @@ def launch_gradio_app():
             label="Project / Topic",
             placeholder="Example: testing a SaaS inventory management web application",
             value="Software Project"
+        )
+        documentation_mode = gr.Radio(
+            choices=[mode.value for mode in DocumentationMode],
+            label="Documentation Mode",
+            value=DocumentationMode.GENERAL_SOFTWARE.value,
         )
         uploaded_files = gr.File(
             label="Upload required documents",
@@ -182,7 +207,7 @@ def launch_gradio_app():
 
         submit.click(
             fn=generate_strategy,
-            inputs=[topic, uploaded_files, all_documents_added],
+            inputs=[topic, uploaded_files, all_documents_added, documentation_mode],
             outputs=[documents_output, archive_output, status_output],
         )
 
