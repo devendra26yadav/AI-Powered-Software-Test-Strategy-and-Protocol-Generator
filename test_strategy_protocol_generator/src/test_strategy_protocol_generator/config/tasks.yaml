@@ -5,6 +5,8 @@ planning_task:
     requirements, strategy, test design, validation, and reporting. Treat {topic} as any kind
     of software product or system. Tailor the work to the project context and do not assume a
     particular industry or regulatory regime.
+    {medical_device_mode_instructions}
+    {medical_device_test_plan_instructions}
     Use the uploaded project documents as context when they are provided. Document context:
     {document_context}
   expected_output: >
@@ -16,8 +18,9 @@ research_task:
   description: >
     Research relevant software quality practices, standards, test techniques, tools, and risks for
     {topic}. Tailor findings to the product type and technology shown in the uploaded documents.
-    Do not assume healthcare or another regulated domain. Do not invent sources, standards, or
+    For General Software, do not assume a regulated domain. Do not invent sources, standards, or
     project facts; label assumptions and identify where current verification is needed.
+    {medical_device_mode_instructions}
     Consider that the current year is {current_year}.
     Use the following uploaded project documentation as additional evidence and context:
     {document_context}
@@ -32,6 +35,7 @@ requirements_task:
     accessibility, compatibility, and operational requirements relevant to testing {topic}.
     Include regulatory or compliance requirements only when supported by the supplied context.
     Highlight gaps, assumptions, and scope boundaries.
+    {medical_device_mode_instructions}
     Use the uploaded documentation as supporting context:
     {document_context}
   expected_output: >
@@ -44,6 +48,8 @@ strategy_task:
     Based on the research and requirements, design a complete test strategy for {topic}.
     Include test levels, entry/exit criteria, coverage model, test design techniques,
     tooling, environment needs, and release readiness approach.
+    {medical_device_mode_instructions}
+    {medical_device_test_plan_instructions}
     Incorporate inputs from the uploaded documents and the project context below:
     {document_context}
   expected_output: >
@@ -57,6 +63,8 @@ test_protocol_task:
     strategy. Specify test phases, environment and data needs, roles, entry and exit criteria,
     execution workflow, evidence to retain, defect severity and escalation, and release decisions.
     Keep the protocol appropriate to the software type and identify unresolved assumptions.
+    {medical_device_mode_instructions}
+    {medical_device_protocol_instructions}
     Project documents:
     {document_context}
   expected_output: >
@@ -71,11 +79,16 @@ test_design_task:
     security, accessibility, and performance scenarios. For each case include an ID, objective,
     priority, test level, preconditions, steps, expected result, and requirement or risk link.
     Avoid inventing product behavior that is not in the context; mark assumptions explicitly.
+    {medical_device_mode_instructions}
+    {medical_device_protocol_instructions}
+    {test_design_output_instructions}
+    For Medical Device Software, place the traceability matrix and verification test cases in
+    separate sections with the exact headings required by the mode-specific instructions.
     Project documents:
     {document_context}
   expected_output: >
-    A standalone test suite document containing grouped, prioritized, executable test cases and
-    traceability to requirements or risks, plus any assumptions requiring confirmation.
+    A standalone output with the required mode-specific traceability matrix and test case sections,
+    plus any assumptions requiring confirmation. Do not duplicate the matrix in the test cases.
   agent: quality_assurance_engineer
 
 automation_assessment_task:
@@ -96,6 +109,8 @@ quality_task:
   description: >
     Critically review the draft strategy and verify that it is practical, measurable, and executable.
     Check for missing quality gates, unclear roles, incomplete test cases, and gaps in release validation.
+    {medical_device_mode_instructions}
+    {medical_device_summary_instructions}
     Use the uploaded project documents as validation context:
     {document_context}
   expected_output: >
@@ -108,6 +123,10 @@ risk_task:
     Evaluate product, technical, security, operational, delivery, and domain-specific risks for
     {topic}. Include compliance risks only when relevant to the project context. Identify failure
     modes, affected requirements, likelihood, impact, mitigations, and residual risks.
+    {medical_device_mode_instructions}
+    For Medical Device Software, preserve supplied risk identifiers and distinguish hazards,
+    hazardous situations, harms, risk controls, and residual risk only where the source records
+    support those distinctions. Do not invent risk acceptability decisions.
     Review the uploaded project documents for risk evidence and scope constraints:
     {document_context}
   expected_output: >
@@ -119,7 +138,11 @@ reporting_task:
     Create a concise executive summary that indexes and synthesizes the separate testing documents
     produced for {topic}. Note key decisions, assumptions, unresolved questions, and release-readiness
     recommendations. Do not replace or collapse the standalone deliverables into this summary.
+    For Medical Device Software, follow the verification summary sections, use only supplied
+    execution evidence, and synthesize findings without duplicating full test cases or matrix rows.
     Use the uploaded project documents and all prior outputs as part of the final evidence base:
+    {medical_device_mode_instructions}
+    {medical_device_summary_instructions}
     {document_context}
   expected_output: >
     A standalone markdown executive summary with links or filenames for each generated deliverable,
