@@ -84,6 +84,12 @@ class TestStrategyProtocolGenerator():
         )
 
     @task
+    def risk_task(self) -> Task:
+        return Task(
+            config=self.tasks_config['risk_task'], # type: ignore[index]
+        )
+
+    @task
     def test_protocol_task(self) -> Task:
         return Task(
             config=self.tasks_config['test_protocol_task'], # type: ignore[index]
@@ -105,12 +111,6 @@ class TestStrategyProtocolGenerator():
     def quality_task(self) -> Task:
         return Task(
             config=self.tasks_config['quality_task'], # type: ignore[index]
-        )
-
-    @task
-    def risk_task(self) -> Task:
-        return Task(
-            config=self.tasks_config['risk_task'], # type: ignore[index]
         )
 
     @task

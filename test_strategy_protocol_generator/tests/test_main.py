@@ -1,10 +1,12 @@
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 from test_strategy_protocol_generator.main import (
     DocumentationMode,
     GENERAL_TEST_DESIGN_OUTPUT_INSTRUCTIONS,
+    GENERAL_REQUIREMENTS_OUTPUT_INSTRUCTIONS,
     GENERAL_SOFTWARE_DOCUMENTS,
     MEDICAL_DEVICE_MODE_INSTRUCTIONS,
     MEDICAL_DEVICE_PROTOCOL_INSTRUCTIONS,
@@ -13,9 +15,13 @@ from test_strategy_protocol_generator.main import (
     MEDICAL_DEVICE_TEST_PLAN_INSTRUCTIONS,
     MEDICAL_DEVICE_TRACEABILITY_INSTRUCTIONS,
     _build_crew_inputs,
+    _build_document_contents,
+    _build_traceability_matrix,
     _extract_markdown_section,
     _has_verification_execution_evidence,
+    _mark_cases_not_executed,
     _remove_markdown_section,
+    _run_generation_pipeline,
     _write_document_package,
 )
 
@@ -36,6 +42,11 @@ class BuildCrewInputsTests(unittest.TestCase):
             "Requirements Traceability Matrix",
             inputs["test_design_output_instructions"],
         )
+        self.assertEqual(
+            inputs["requirements_output_instructions"],
+            GENERAL_REQUIREMENTS_OUTPUT_INSTRUCTIONS,
+        )
+        self.assertIn("REQ-F-001", inputs["requirements_output_instructions"])
 
     def test_preserves_selected_medical_device_mode(self):
         inputs = _build_crew_inputs(
@@ -78,6 +89,7 @@ class BuildCrewInputsTests(unittest.TestCase):
         self.assertIn("ISO 13485", inputs["medical_device_mode_instructions"])
         self.assertIn("FDA QMSR", inputs["medical_device_mode_instructions"])
         self.assertIn("Risk Control", inputs["test_design_output_instructions"])
+        self.assertIn("REQ-F-001", inputs["requirements_output_instructions"])
 
     def test_extract_markdown_section_stops_at_next_peer_heading(self):
         content = (
@@ -114,25 +126,108 @@ class BuildCrewInputsTests(unittest.TestCase):
             )
         )
 
+    def test_traceability_adds_pending_rows_for_unmapped_ids(self):
+        from test_strategy_protocol_generator.main import DOCUMENT_MODE_PROFILES
+
+        matrix = _build_traceability_matrix(
+            "REQ-F-001: Functional requirement",
+            "RISK-001; RC-001",
+            "## Requirements and Risk Traceability Matrix\n"
+            "| Requirement ID | Risk Reference | Risk Control | Test Case ID | "
+            "Verification Status | Evidence Reference |\n"
+            "|---|---|---|---|---|---|\n"
+            "| REQ-F-001 | Not provided | Not provided | TC-1 | Pending / Not Verified | Not provided |",
+            DOCUMENT_MODE_PROFILES[DocumentationMode.MEDICAL_DEVICE_SOFTWARE],
+        )
+
+        self.assertIn(
+            "| Not provided | RISK-001 | Not provided | Not linked | "
+            "Pending / Not Verified | Not provided |",
+            matrix,
+        )
+        self.assertIn(
+            "| Not provided | Not provided | RC-001 | Not linked | "
+            "Pending / Not Verified | Not provided |",
+            matrix,
+        )
+        self.assertIn("Risk identifiers requiring mapping: RISK-001, RC-001", matrix)
+
+    def test_case_execution_fields_are_cleared_without_execution_evidence(self):
+        cases = (
+            "- **Actual Results:** It worked\n"
+            "- **Test Status:** Passed\n"
+            "- **Objective Evidence Reference:** evidence-1"
+        )
+
+        pending = _mark_cases_not_executed(cases)
+
+        self.assertIn("Actual Results:** Not executed", pending)
+        self.assertIn("Test Status:** Not Executed", pending)
+        self.assertIn("Objective Evidence Reference:** Not provided", pending)
+
+    def test_shared_pipeline_selects_profile_for_each_mode(self):
+        for mode, documents in (
+            (DocumentationMode.GENERAL_SOFTWARE, GENERAL_SOFTWARE_DOCUMENTS),
+            (DocumentationMode.MEDICAL_DEVICE_SOFTWARE, MEDICAL_DEVICE_SOFTWARE_DOCUMENTS),
+        ):
+            with self.subTest(mode=mode.value):
+                outputs = [TaskOutput("") for _ in range(10)]
+                built = _build_document_contents(
+                    outputs,
+                    type("CrewResult", (), {"raw": "Summary"})(),
+                    mode,
+                )
+                self.assertEqual(len(built), len(documents))
+
+    def test_shared_generation_pipeline_passes_mode_to_crew_and_export(self):
+        result = type("CrewResult", (), {"tasks_output": [], "raw": "Summary"})()
+        for mode in DocumentationMode:
+            with self.subTest(mode=mode.value):
+                with (
+                    patch("test_strategy_protocol_generator.main.TestStrategyProtocolGenerator") as crew_class,
+                    patch("test_strategy_protocol_generator.main._write_document_package") as writer,
+                ):
+                    crew_class.return_value.crew.return_value.kickoff.return_value = result
+                    writer.return_value = (["document.md"], "documents.zip")
+
+                    returned_result, files, archive, status = _run_generation_pipeline(
+                        " Example ", [], mode
+                    )
+
+                    self.assertIs(returned_result, result)
+                    self.assertEqual((files, archive), (["document.md"], "documents.zip"))
+                    self.assertIn("Generated 4", status)
+                    kickoff_inputs = crew_class.return_value.crew.return_value.kickoff.call_args.kwargs["inputs"]
+                    self.assertEqual(kickoff_inputs["documentation_mode"], mode.value)
+                    writer.assert_called_once()
+                    self.assertEqual(writer.call_args.args[2], mode)
+
 
 class DocumentPackageTests(unittest.TestCase):
     def setUp(self):
         self.task_outputs = [
             TaskOutput("Project scope and acceptance criteria"),
             TaskOutput("Research findings"),
-            TaskOutput("Prioritized requirement list"),
+            TaskOutput(
+                "Functional requirements:\n"
+                "- REQ-F-001: Inventory items can be created.\n"
+                "Nonfunctional requirements:\n"
+                "- REQ-NF-001: Standard pages load within two seconds."
+            ),
             TaskOutput("Test strategy and environment"),
+            TaskOutput("RISK-001 with RC-001 risk control"),
             TaskOutput("Test execution procedures"),
             TaskOutput(
                 "## Requirements Traceability Matrix\n"
-                "| Requirement | Test case | Coverage |\n"
-                "| REQ-1 | TC-1 | Covered |\n\n"
+                "| Requirement ID | Test Case ID | Verification Status | Evidence Reference |\n"
+                "| REQ-F-001 | TC-1 | Pending | Not provided |\n\n"
                 "## Detailed Test Cases\n"
-                "TC-1: Verify inventory item creation."
+                "### TC-1\n"
+                "TC-1: Verify inventory item creation.\n"
+                "- Requirement ID: REQ-F-001"
             ),
             TaskOutput("Manual and automated testing approach"),
             TaskOutput("Quality review"),
-            TaskOutput("Risk register"),
             TaskOutput("Executive conclusions"),
         ]
 
@@ -178,8 +273,11 @@ class DocumentPackageTests(unittest.TestCase):
             self.assertIn("Manual and automated testing approach", plan)
             self.assertIn("Test execution procedures", protocol)
             self.assertIn("TC-1: Verify inventory item creation.", protocol)
-            self.assertNotIn("| REQ-1 | TC-1 | Covered |", protocol)
-            self.assertIn("| REQ-1 | TC-1 | Covered |", matrix)
+            self.assertNotIn("| REQ-F-001 | TC-1 | Pending |", protocol)
+            self.assertIn(
+                "| REQ-F-001 | TC-1 | Pending | Not provided |",
+                matrix,
+            )
             self.assertNotIn("TC-1: Verify inventory item creation.", matrix)
             self.assertIn("Pending / Not Executed", summary)
             self.assertIn("no actual test execution evidence", summary)
@@ -191,18 +289,18 @@ class DocumentPackageTests(unittest.TestCase):
 
     def test_medical_device_mode_generates_four_verification_documents(self):
         medical_outputs = list(self.task_outputs)
-        medical_outputs[5] = TaskOutput(
+        medical_outputs[6] = TaskOutput(
             "## Requirements and Risk Traceability Matrix\n"
             "| Requirement ID | Risk Reference | Risk Control | Test Case ID | "
             "Verification Status | Evidence Reference |\n"
-            "| REQ-1 | RISK-1 | RC-1 | TC-1 | Pending / Not Verified | Not Provided |\n\n"
+            "| REQ-F-001 | RISK-1 | RC-1 | TC-1 | Pending / Not Verified | Not Provided |\n\n"
             "## Verification Test Cases\n"
             "### TC-1\n"
-            "- **Linked Requirement ID:** REQ-1\n"
+            "- **Linked Requirement ID:** REQ-F-001\n"
             "- **Linked Risk Control ID:** RC-1\n"
             "- **Preconditions:** Approved test environment available\n"
             "- **Test Steps:** Execute the documented verification steps\n"
-            "- **Expected Results:** System meets REQ-1\n"
+            "- **Expected Results:** System meets REQ-F-001\n"
             "- **Actual Results:** Not provided\n"
             "- **Test Status:** Not Executed\n"
             "- **Objective Evidence Reference:** Not provided"
@@ -260,7 +358,7 @@ class DocumentPackageTests(unittest.TestCase):
             ):
                 self.assertIn(field, protocol)
             self.assertIn(
-                "| REQ-1 | RISK-1 | RC-1 | TC-1 | Pending / Not Verified | Not Provided |",
+                "| REQ-F-001 | RISK-1 | RC-1 | TC-1 | Pending / Not Verified | Not provided |",
                 matrix,
             )
             self.assertNotIn("TC-1", summary.split("## Open Anomalies", 1)[0])
@@ -268,7 +366,7 @@ class DocumentPackageTests(unittest.TestCase):
             self.assertIn("Risk-Control Verification", summary)
             self.assertIn("Review and Approval", summary)
             self.assertIn("Not provided | Pending", summary)
-            self.assertIn("Executive conclusions", summary)
+            self.assertNotIn("Executive conclusions", summary)
         finally:
             self._remove_package(files, archive_path)
 
@@ -294,7 +392,7 @@ class DocumentPackageTests(unittest.TestCase):
             self.assertIn("Not provided; classification not determined.", plan)
             self.assertIn("Test Case ID:** Not provided", protocol)
             self.assertIn("Test Status:** Not Executed", protocol)
-            self.assertIn("Actual Results:** Omit until supplied", protocol)
+            self.assertIn("Actual Results:** Not executed", protocol)
             self.assertIn("Pending / Not Verified", matrix)
             self.assertIn("Pending / Not Executed", summary)
             self.assertNotIn("PASS", summary)

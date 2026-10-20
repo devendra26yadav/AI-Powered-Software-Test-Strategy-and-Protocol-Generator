@@ -33,14 +33,17 @@ requirements_task:
   description: >
     Review the project context and define the functional, non-functional, business, security,
     accessibility, compatibility, and operational requirements relevant to testing {topic}.
-    Include regulatory or compliance requirements only when supported by the supplied context.
+    For General Software, include regulatory or compliance requirements only when supported by
+    the supplied context.
     Highlight gaps, assumptions, and scope boundaries.
+    {requirements_output_instructions}
     {medical_device_mode_instructions}
     Use the uploaded documentation as supporting context:
     {document_context}
   expected_output: >
-    A structured requirements brief covering scope, quality objectives, constraints, dependencies,
-    and a prioritized list of testable requirements for {topic}.
+    A structured requirements brief covering functional and nonfunctional requirements, scope,
+    quality objectives, constraints, dependencies, and a prioritized list of testable requirements
+    with stable IDs assigned according to the mode instructions.
   agent: requirements_analyst
 
 strategy_task:
@@ -75,15 +78,20 @@ test_protocol_task:
 test_design_task:
   description: >
     Design representative test suites and detailed test cases for {topic}, traceable to the
-    requirements and risks. Cover applicable positive, negative, boundary, integration, regression,
+    requirement IDs from requirements analysis and risk/risk-control IDs from risk analysis.
+    Reuse identifiers exactly; never create an unmapped requirement or risk ID. Cover applicable
+    positive, negative, boundary, integration, regression,
     security, accessibility, and performance scenarios. For each case include an ID, objective,
-    priority, test level, preconditions, steps, expected result, and requirement or risk link.
+    priority, test level, preconditions, steps, expected result, and linked requirement ID(s) and
+    risk/risk-control ID(s) where applicable.
     Avoid inventing product behavior that is not in the context; mark assumptions explicitly.
     {medical_device_mode_instructions}
     {medical_device_protocol_instructions}
     {test_design_output_instructions}
     For Medical Device Software, place the traceability matrix and verification test cases in
     separate sections with the exact headings required by the mode-specific instructions.
+    The matrix must include every requirement from requirements analysis and every applicable
+    risk control from the risk analysis. Use Pending / Not Verified when execution evidence is absent.
     Project documents:
     {document_context}
   expected_output: >
@@ -135,9 +143,8 @@ risk_task:
 
 reporting_task:
   description: >
-    Create a concise executive summary that indexes and synthesizes the separate testing documents
-    produced for {topic}. Note key decisions, assumptions, unresolved questions, and release-readiness
-    recommendations. Do not replace or collapse the standalone deliverables into this summary.
+    Create a concise summary for {topic} covering key decisions, assumptions, unresolved questions,
+    and release readiness. Do not replace or collapse the standalone deliverables into this summary.
     For Medical Device Software, follow the verification summary sections, use only supplied
     execution evidence, and synthesize findings without duplicating full test cases or matrix rows.
     Use the uploaded project documents and all prior outputs as part of the final evidence base:

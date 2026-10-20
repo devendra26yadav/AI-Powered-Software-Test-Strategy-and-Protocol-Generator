@@ -48,6 +48,8 @@ The Gradio application offers two documentation modes. **General Software** is t
 - Requirements Traceability Matrix
 - Software Test Summary Report
 
+Both modes use the same generation pipeline for requirement extraction, test design, traceability, consistency checks, and export; mode-specific prompts and templates shape the deliverables.
+
 When no test execution evidence is supplied, the summary report marks execution as **Pending / Not Executed** and notes that defects, coverage, and execution conclusions are unavailable.
 
 **Medical Device Software** generates a Software Test Plan, Software Verification Protocol, Requirements and Risk Traceability Matrix, and Software Verification Summary Report. IEC 62304, ISO 14971, ISO 13485, and applicable FDA QMSR expectations are used as design references only; generated documentation does not assert compliance. Missing classifications, execution results, evidence, anomalies, and approvals are identified as not provided, pending, or not assessed rather than inferred. Optional risk-management, validation, anomaly, and change-control records are included when the project requirements call for them and source records are supplied.

@@ -22,11 +22,18 @@ class DocumentationMode(str, Enum):
 
 
 GENERAL_TEST_DESIGN_OUTPUT_INSTRUCTIONS = (
-    'For General Software mode, return two distinct Markdown sections: '
-    '"Requirements Traceability Matrix" and "Detailed Test Cases". The matrix '
-    "must map each available requirement ID to linked test case IDs and identify "
-    "uncovered requirements. The detailed cases section must contain executable "
-    "test cases and must not repeat the matrix."
+    "For General Software, use requirement IDs assigned by the requirements analysis "
+    "exactly. Return separate 'Requirements Traceability Matrix' and 'Detailed Test "
+    "Cases' sections; map each requirement to test case IDs, identify uncovered "
+    "requirements, and do not repeat matrix rows in the cases."
+)
+
+GENERAL_REQUIREMENTS_OUTPUT_INSTRUCTIONS = (
+    "Extract functional and nonfunctional requirements from source material into "
+    "separate groups. Assign stable IDs REQ-F-001, REQ-F-002, ... for functional and "
+    "REQ-NF-001, REQ-NF-002, ... for nonfunctional requirements. Preserve explicit "
+    "source IDs alongside these generated IDs when available. Clearly mark inferred "
+    "or proposed requirements; do not present them as source requirements."
 )
 
 MEDICAL_DEVICE_MODE_INSTRUCTIONS = (
@@ -38,6 +45,14 @@ MEDICAL_DEVICE_MODE_INSTRUCTIONS = (
     "Never invent intended use, software safety classification, risk controls, test "
     "results, anomalies, evidence, approvals, reviewers, or signatures. Do not infer a "
     "classification or jurisdiction."
+)
+
+MEDICAL_DEVICE_REQUIREMENTS_OUTPUT_INSTRUCTIONS = (
+    "Extract functional and nonfunctional requirements from supplied source records. "
+    "Assign stable IDs REQ-F-001, REQ-F-002, ... and REQ-NF-001, REQ-NF-002, ...; "
+    "preserve source IDs alongside generated IDs. Distinguish requirements from "
+    "assumptions and proposed items. Do not invent intended use, safety classification, "
+    "risk controls, or regulatory requirements."
 )
 
 MEDICAL_DEVICE_TEST_PLAN_INSTRUCTIONS = (
@@ -93,6 +108,48 @@ MEDICAL_DEVICE_SOFTWARE_DOCUMENTS = [
     ("04_software_verification_summary_report.md", "Software Verification Summary Report"),
 ]
 
+TASK_OUTPUT_INDEX = {
+    "planning": 0,
+    "research": 1,
+    "requirements": 2,
+    "strategy": 3,
+    "risk": 4,
+    "protocol": 5,
+    "test_design": 6,
+    "automation": 7,
+    "quality": 8,
+    "reporting": 9,
+}
+
+DOCUMENT_MODE_PROFILES = {
+    DocumentationMode.GENERAL_SOFTWARE: {
+        "documents": GENERAL_SOFTWARE_DOCUMENTS,
+        "matrix_heading": "Requirements Traceability Matrix",
+        "case_headings": ("Detailed Test Cases", "Test Cases"),
+        "matrix_columns": (
+            "Requirement ID",
+            "Test Case ID",
+            "Verification Status",
+            "Evidence Reference",
+        ),
+        "medical_device": False,
+    },
+    DocumentationMode.MEDICAL_DEVICE_SOFTWARE: {
+        "documents": MEDICAL_DEVICE_SOFTWARE_DOCUMENTS,
+        "matrix_heading": "Requirements and Risk Traceability Matrix",
+        "case_headings": ("Verification Test Cases", "Detailed Test Cases", "Test Cases"),
+        "matrix_columns": (
+            "Requirement ID",
+            "Risk Reference",
+            "Risk Control",
+            "Test Case ID",
+            "Verification Status",
+            "Evidence Reference",
+        ),
+        "medical_device": True,
+    },
+}
+
 
 def _extract_text_from_file(file_path: str) -> str:
     """Read common text-based project files and extract text content."""
@@ -126,7 +183,10 @@ def _extract_text_from_file(file_path: str) -> str:
 def _build_document_context(uploaded_files):
     """Convert uploaded files into a single context string for the crew."""
     if not uploaded_files:
-        return "No project documents were uploaded. Use the topic and general context only."
+        return (
+            "No project documents were uploaded. Use only the supplied topic and general "
+            "context; identify assumptions and do not invent project facts."
+        )
 
     collected_sections = []
     for uploaded_file in uploaded_files:
@@ -226,48 +286,332 @@ def _has_verification_execution_evidence(document_context: str) -> bool:
     )
 
 
-def _general_software_documents(task_outputs, result):
-    planning = _task_output_text(task_outputs, 0)
-    strategy = _task_output_text(task_outputs, 3)
-    protocol = _task_output_text(task_outputs, 4)
-    test_design = _task_output_text(task_outputs, 5)
-    automation = _task_output_text(task_outputs, 6)
-    requirements = _task_output_text(task_outputs, 2)
-    summary = _task_output_text(task_outputs, 9) or getattr(result, "raw", None) or str(result)
+def _task_outputs_by_name(task_outputs) -> dict[str, str]:
+    return {
+        name: _task_output_text(task_outputs, index)
+        for name, index in TASK_OUTPUT_INDEX.items()
+    }
 
-    traceability_matrix = _extract_markdown_section(
-        test_design, "Requirements Traceability Matrix"
+
+def _requirement_ids(requirements: str) -> list[str]:
+    return list(dict.fromkeys(re.findall(r"\bREQ-(?:F|NF)-\d{3}\b", requirements)))
+
+
+def _test_case_ids(test_cases: str) -> list[str]:
+    return list(dict.fromkeys(re.findall(r"\bTC-[A-Z0-9]+(?:-[A-Z0-9]+)*\b", test_cases)))
+
+
+def _build_traceability_matrix(requirements, risks, test_cases, profile) -> str:
+    heading = profile["matrix_heading"]
+    matrix = _extract_markdown_section(test_cases, heading)
+    requirement_ids = _requirement_ids(requirements)
+    risk_ids = list(
+        dict.fromkeys(re.findall(r"\b(?:RISK|RC)-[A-Z0-9]+(?:-[A-Z0-9]+)*\b", risks))
     )
-    if not traceability_matrix:
-        traceability_matrix = (
-            "## Requirements Traceability Matrix\n\n"
-            "The test-design task did not return a separately identifiable matrix. "
-            "Requirement-to-test mapping is pending; review the test cases in the "
-            "Software Test Protocol and complete this matrix before sign-off.\n\n"
-            "### Requirements source\n\n"
-            f"{requirements or 'No requirements-task output was returned.'}"
+    test_case_ids = _test_case_ids(test_cases)
+    columns = profile["matrix_columns"]
+
+    if not matrix:
+        rows = []
+        if requirement_ids:
+            for requirement_id in requirement_ids:
+                rows.append(
+                    "| "
+                    + " | ".join(
+                        requirement_id if column == "Requirement ID" else "Not provided"
+                        if column in {"Risk Reference", "Risk Control"}
+                        else "Not linked"
+                        if column == "Test Case ID"
+                        else "Pending / Not Verified"
+                        if column == "Verification Status"
+                        else "Not provided"
+                        for column in columns
+                    )
+                    + " |"
+                )
+        elif profile["medical_device"]:
+            for risk_id in risk_ids:
+                rows.append(
+                    "| "
+                    + " | ".join(
+                        risk_id if column == ("Risk Control" if risk_id.startswith("RC-") else "Risk Reference")
+                        else "Not provided"
+                        if column in {"Requirement ID", "Risk Reference", "Risk Control"}
+                        else "Not linked"
+                        if column == "Test Case ID"
+                        else "Pending / Not Verified"
+                        if column == "Verification Status"
+                        else "Not provided"
+                        for column in columns
+                    )
+                    + " |"
+                )
+        if not rows:
+            rows.append(
+                "| "
+                + " | ".join(
+                    "Not provided" if column not in {"Verification Status"}
+                    else "Pending / Not Verified"
+                    for column in columns
+                )
+                + " |"
+            )
+        matrix = (
+            f"## {heading}\n\n"
+            "Requirement IDs come from requirements analysis; verify all mappings before sign-off.\n\n"
+            "| " + " | ".join(columns) + " |\n"
+            "| " + " | ".join("---" for _ in columns) + " |\n"
+            + "\n".join(rows)
         )
 
-    test_cases = (
-        _extract_markdown_section(test_design, "Detailed Test Cases")
-        or _extract_markdown_section(test_design, "Test Cases")
+    header_line = next(
+        (line.casefold() for line in matrix.splitlines() if "|" in line),
+        "",
+    )
+    if not all(column.casefold() in header_line for column in columns):
+        matrix += (
+            "\n\n### Required traceability fields\n\n"
+            "| " + " | ".join(columns) + " |\n"
+            "| " + " | ".join("---" for _ in columns) + " |\n"
+            "| "
+            + " | ".join(
+                "Not provided" if column != "Verification Status"
+                else "Pending / Not Verified"
+                for column in columns
+            )
+            + " |"
+        )
+
+    missing_requirements = [
+        identifier for identifier in requirement_ids if identifier not in matrix
+    ]
+    missing_cases = [
+        identifier for identifier in test_case_ids if identifier not in matrix
+    ]
+    missing_risks = [identifier for identifier in risk_ids if identifier not in matrix]
+    validation_heading = "\n\n### Consistency validation\n"
+    matrix_body, separator, validation_note = matrix.partition(validation_heading)
+    for requirement_id in missing_requirements:
+        values = {
+            "Requirement ID": requirement_id,
+            "Risk Reference": "Not provided",
+            "Risk Control": "Not provided",
+            "Test Case ID": "Not linked",
+            "Verification Status": "Pending / Not Verified",
+            "Evidence Reference": "Not provided",
+        }
+        matrix_body += "\n| " + " | ".join(values.get(column, "Not provided") for column in columns) + " |"
+    for test_case_id in missing_cases:
+        values = {
+            "Requirement ID": "Not linked",
+            "Risk Reference": "Not provided",
+            "Risk Control": "Not provided",
+            "Test Case ID": test_case_id,
+            "Verification Status": "Not Executed",
+            "Evidence Reference": "Not provided",
+        }
+        matrix_body += "\n| " + " | ".join(values.get(column, "Not provided") for column in columns) + " |"
+    for risk_id in missing_risks:
+        values = {
+            "Requirement ID": "Not provided",
+            "Risk Reference": risk_id if risk_id.startswith("RISK-") else "Not provided",
+            "Risk Control": risk_id if risk_id.startswith("RC-") else "Not provided",
+            "Test Case ID": "Not linked",
+            "Verification Status": "Pending / Not Verified",
+            "Evidence Reference": "Not provided",
+        }
+        matrix_body += "\n| " + " | ".join(values.get(column, "Not provided") for column in columns) + " |"
+    matrix = matrix_body + (separator + validation_note if separator else "")
+    if missing_requirements or missing_cases or missing_risks:
+        matrix += (
+            ("" if separator else validation_heading)
+            + "\n"
+            "- Unmapped requirements: "
+            + (", ".join(missing_requirements) or "None")
+            + "\n- Test cases missing from matrix: "
+            + (", ".join(missing_cases) or "None")
+            + "\n- Risk identifiers requiring mapping: "
+            + (", ".join(missing_risks) or "None")
+            + "\n- Status: Review required; do not claim coverage for missing mappings."
+        )
+    return matrix
+
+
+def _set_traceability_execution_status(matrix: str, profile, evidence_supplied: bool) -> str:
+    if evidence_supplied:
+        return matrix
+
+    lines = matrix.splitlines()
+    header_index = next(
+        (index for index, line in enumerate(lines) if "|" in line and "Requirement ID" in line),
+        None,
+    )
+    if header_index is None:
+        return matrix
+
+    headers = [cell.strip().casefold() for cell in lines[header_index].strip().strip("|").split("|")]
+    status_index = headers.index("verification status") if "verification status" in headers else None
+    evidence_index = headers.index("evidence reference") if "evidence reference" in headers else None
+    if status_index is None:
+        return matrix
+
+    for index in range(header_index + 1, len(lines)):
+        if not lines[index].strip().startswith("|"):
+            continue
+        cells = [cell.strip() for cell in lines[index].strip().strip("|").split("|")]
+        if len(cells) != len(headers) or all(re.fullmatch(r":?-{3,}:?", cell) for cell in cells):
+            continue
+        cells[status_index] = (
+            "Pending / Not Verified" if profile["medical_device"] else "Pending"
+        )
+        if evidence_index is not None:
+            cells[evidence_index] = "Not provided"
+        lines[index] = "| " + " | ".join(cells) + " |"
+    return "\n".join(lines)
+
+
+def _mark_cases_not_executed(content: str) -> str:
+    fields = (
+        (
+            r"(?im)^(\s*[-*]\s*)?(?:\*\*)?Actual Results?(?:\*\*)?\s*:\s*.*$",
+            r"\1**Actual Results:** Not executed; no result supplied",
+        ),
+        (
+            r"(?im)^(\s*[-*]\s*)?(?:\*\*)?Test Status(?:\*\*)?\s*:\s*.*$",
+            r"\1**Test Status:** Not Executed",
+        ),
+        (
+            r"(?im)^(\s*[-*]\s*)?(?:\*\*)?Objective Evidence Reference(?:\*\*)?\s*:\s*.*$",
+            r"\1**Objective Evidence Reference:** Not provided",
+        ),
+    )
+    for pattern, replacement in fields:
+        content = re.sub(pattern, replacement, content)
+    return content
+
+
+def _build_document_contents(task_outputs, result, mode, document_context=""):
+    """Build the four deliverables through one shared, mode-profiled pipeline."""
+    profile = DOCUMENT_MODE_PROFILES[DocumentationMode(mode)]
+    outputs = _task_outputs_by_name(task_outputs)
+    requirements = outputs["requirements"]
+    test_design = outputs["test_design"]
+
+    execution_evidence = (
+        profile["medical_device"]
+        and _has_verification_execution_evidence(document_context)
+    )
+    matrix = _build_traceability_matrix(
+        requirements, outputs["risk"], test_design, profile
+    )
+    matrix = _set_traceability_execution_status(matrix, profile, execution_evidence)
+    test_cases = next(
+        (
+            section
+            for heading in profile["case_headings"]
+            if (section := _extract_markdown_section(test_design, heading))
+        ),
+        "",
     )
     if not test_cases:
-        test_cases = _remove_markdown_section(
-            test_design, "Requirements Traceability Matrix"
-        )
+        test_cases = _remove_markdown_section(test_design, profile["matrix_heading"])
     if not test_cases:
         test_cases = (
-            "Detailed test cases were not returned in a separately identifiable section. "
-            "Review the test-design task output and add executable cases before test execution.\n\n"
-            f"{test_design or 'No test-design task output was returned.'}"
+            "No test cases were returned. Add and review executable test cases before execution.\n\n"
+            f"{test_design or 'Test cases not provided.'}"
+        )
+    # The protocol and matrix both link to stable IDs, but only the protocol owns case detail.
+    test_cases = _remove_markdown_section(test_cases, profile["matrix_heading"])
+
+    plan_parts = [
+        outputs["planning"],
+        outputs["requirements"],
+        outputs["strategy"],
+        outputs["automation"],
+    ]
+    if profile["medical_device"]:
+        plan_parts.insert(1, outputs["research"])
+    plan = "\n\n".join(section for section in plan_parts if section)
+    if profile["medical_device"]:
+        plan = _ensure_markdown_sections(
+            plan or "No test-plan task output was returned.",
+            {
+                "Intended Use and Scope": "Not provided; confirm from approved project records.",
+                "Applicable Standards": (
+                    "IEC 62304, ISO 14971, ISO 13485, and applicable FDA QMSR expectations "
+                    "are design references only. Confirm applicability; this is not a compliance claim."
+                ),
+                "Software Safety Classification": "Not provided; classification not determined.",
+                "Risk-Based Testing Strategy": "Define from supplied risk-management records.",
+                "Verification Approach": "Define and approve before verification execution.",
+                "Acceptance Criteria": "Not provided; confirm and approve project-specific criteria.",
+                "Review and Approval": (
+                    "| Role | Name | Signature | Date | Status |\n"
+                    "|---|---|---|---|---|\n"
+                    "| Reviewer | Not provided | Pending | Pending | Pending |\n"
+                    "| Approver | Not provided | Pending | Pending | Pending |"
+                ),
+            },
         )
 
-    return [
-        "\n\n".join(section for section in (planning, strategy, automation) if section),
-        "\n\n".join(section for section in (protocol, test_cases) if section),
-        traceability_matrix,
-        (
+    protocol_parts = [outputs["protocol"], test_cases]
+    if profile["medical_device"]:
+        protocol = "\n\n".join(part for part in protocol_parts if part)
+        if not execution_evidence:
+            protocol = _mark_cases_not_executed(protocol)
+        if not re.search(r"^\s*[-*]\s*\*\*Test Case ID:", protocol, re.MULTILINE):
+            protocol += (
+                "\n\n### Test Case: Not provided\n\n"
+                "- **Test Case ID:** Not provided\n"
+                "- **Linked Requirement ID:** Not provided\n"
+                "- **Linked Risk Control ID:** Not provided\n"
+                "- **Preconditions:** Not provided\n"
+                "- **Test Steps:** Not provided\n"
+                "- **Expected Results:** Not provided\n"
+                "- **Actual Results:** Omit until supplied in execution records\n"
+                "- **Test Status:** Not Executed\n"
+                "- **Objective Evidence Reference:** Not provided"
+            )
+        if not execution_evidence:
+            protocol = _mark_cases_not_executed(protocol)
+    else:
+        protocol = "\n\n".join(part for part in protocol_parts if part)
+
+    report = outputs["reporting"] or getattr(result, "raw", None) or str(result)
+    if profile["medical_device"]:
+        summary_sections = (
+            "## Verification Scope\n\n"
+            "See the plan and protocol; confirm intended use, boundaries, and applicable requirements from source records.\n\n"
+            "## Test Execution Summary\n\n"
+            f"- **Execution status:** {'See supplied, test-case-linked execution evidence.' if execution_evidence else 'Pending / Not Executed; no qualifying execution evidence was supplied.'}\n"
+            "- **Actual results:** Include only results explicitly supplied in source records.\n\n"
+            "## Requirements Coverage\n\n"
+            "Pending / Not Assessed unless supported by the traceability matrix and verification evidence.\n\n"
+            "## Risk-Control Verification\n\n"
+            "Pending / Not Verified unless supplied records identify the risk control, linked test, result, and objective evidence.\n\n"
+            "## Open Anomalies\n\n"
+            "Use supplied anomaly records only; otherwise state not provided / not assessed.\n\n"
+            "## Conclusions\n\n"
+            "Verification conclusions and release decisions require reviewed execution evidence. "
+            "Generated test documentation does not establish compliance or approval.\n\n"
+            "## Review and Approval\n\n"
+            "| Role | Name | Signature | Date | Status |\n"
+            "|---|---|---|---|---|\n"
+            "| Reviewer | Not provided | Pending | Pending | Pending |\n"
+            "| Approver | Not provided | Pending | Pending | Pending |"
+        )
+        summary = summary_sections
+        if execution_evidence:
+            summary += (
+                "\n\n## Project-Specific Summary\n\n"
+                "Synthesize supplied project records only; this summary is not verification "
+                "evidence or approval.\n\n"
+                f"{report}"
+            )
+        else:
+            summary += "\n\nNo execution-backed project summary is available."
+    else:
+        summary = (
             "## Test Execution Status\n\n"
             "- **Status:** Pending / Not Executed\n"
             "- **Execution results:** Not available; no actual test execution evidence was provided.\n"
@@ -275,156 +619,11 @@ def _general_software_documents(task_outputs, result):
             "- **Coverage:** Not measured; no execution coverage evidence was provided.\n"
             "- **Conclusion:** Execution-based conclusions and release readiness are pending test execution.\n\n"
             "## Strategy Summary\n\n"
-            f"{summary}"
-        ),
-    ]
-
-
-def _medical_device_software_documents(
-    task_outputs,
-    result,
-    execution_evidence_supplied: bool = False,
-):
-    planning = _task_output_text(task_outputs, 0)
-    research = _task_output_text(task_outputs, 1)
-    strategy = _task_output_text(task_outputs, 3)
-    protocol = _task_output_text(task_outputs, 4)
-    test_design = _task_output_text(task_outputs, 5)
-    summary = _task_output_text(task_outputs, 9) or getattr(result, "raw", None) or str(result)
-
-    traceability_matrix = _extract_markdown_section(
-        test_design, "Requirements and Risk Traceability Matrix"
-    )
-    if not traceability_matrix:
-        traceability_matrix = (
-            "## Requirements and Risk Traceability Matrix\n\n"
-            "No separately identifiable traceability matrix was returned. "
-            "Requirement and risk-control mapping is Pending / Not Verified; "
-            "verification and evidence references were not provided.\n\n"
-            "| Requirement ID | Risk Reference | Risk Control | Test Case ID | "
-            "Verification Status | Evidence Reference |\n"
-            "|---|---|---|---|---|---|\n"
-            "| Not provided | Not provided | Not provided | Not provided | "
-            "Pending / Not Verified | Not provided |"
-        )
-    else:
-        matrix_header = next(
-            (line.casefold() for line in traceability_matrix.splitlines() if "|" in line),
-            "",
-        )
-        required_columns = (
-            "requirement id",
-            "risk reference",
-            "risk control",
-            "test case id",
-            "verification status",
-            "evidence reference",
-        )
-        if not all(column in matrix_header for column in required_columns):
-            traceability_matrix += (
-                "\n\n### Traceability fields requiring completion\n\n"
-                "| Requirement ID | Risk Reference | Risk Control | Test Case ID | "
-                "Verification Status | Evidence Reference |\n"
-                "|---|---|---|---|---|---|\n"
-                "| Not provided | Not provided | Not provided | Not provided | "
-                "Pending / Not Verified | Not provided |"
-            )
-
-    test_cases = (
-        _extract_markdown_section(test_design, "Verification Test Cases")
-        or _extract_markdown_section(test_design, "Detailed Test Cases")
-        or _extract_markdown_section(test_design, "Test Cases")
-    )
-    if not test_cases:
-        test_cases = _remove_markdown_section(
-            test_design, "Requirements and Risk Traceability Matrix"
-        )
-    if not test_cases:
-        test_cases = (
-            "No separately identifiable verification test cases were returned. "
-            "Define and review test cases before execution.\n\n"
-            "### Test Case: Not provided\n\n"
-            "- **Test Case ID:** Not provided\n"
-            "- **Linked Requirement ID:** Not provided\n"
-            "- **Linked Risk Control ID:** Not provided\n"
-            "- **Preconditions:** Not provided\n"
-            "- **Test Steps:** Not provided\n"
-            "- **Expected Results:** Not provided\n"
-            "- **Actual Results:** Omit until supplied in execution records\n"
-            "- **Test Status:** Not Executed\n"
-            "- **Objective Evidence Reference:** Not provided"
+            f"{report}"
         )
 
-    plan = "\n\n".join(
-        section for section in (planning, research, strategy) if section
-    )
-    if not plan:
-        plan = "No test-plan task output was returned."
-    plan = _ensure_markdown_sections(
-        plan,
-        {
-            "Intended Use and Scope": "Not provided; confirm from approved project records.",
-            "Applicable Standards": (
-                "IEC 62304, ISO 14971, ISO 13485, and applicable FDA QMSR expectations "
-                "are design references only. Confirm applicability and current requirements; "
-                "this is not a compliance claim."
-            ),
-            "Software Safety Classification": (
-                "Not provided; classification not determined."
-            ),
-            "Risk-Based Testing Strategy": "Define from supplied risk-management records.",
-            "Verification Approach": "Define and approve before verification execution.",
-            "Acceptance Criteria": "Not provided; confirm and approve project-specific criteria.",
-            "Review and Approval": (
-                "| Role | Name | Signature | Date | Status |\n"
-                "|---|---|---|---|---|\n"
-                "| Reviewer | Not provided | Pending | Pending | Pending |\n"
-                "| Approver | Not provided | Pending | Pending | Pending |"
-            ),
-        },
-    )
-
-    verification_protocol = "\n\n".join(
-        section for section in (protocol, test_cases) if section
-    )
-    if not verification_protocol:
-        verification_protocol = "No verification protocol output was returned."
-
-    verification_summary = (
-        "## Verification Scope\n\n"
-        "See the project-specific scope below. Confirm intended use, system boundaries, "
-        "and applicable requirements from source records; do not infer missing details.\n\n"
-        "## Test Execution Summary\n\n"
-        f"- **Execution status:** {'See supplied, test-case-linked execution evidence.' if execution_evidence_supplied else 'Pending / Not Executed; no qualifying execution evidence was supplied.'}\n"
-        "- **Actual results:** Include only results explicitly supplied in source records.\n\n"
-        "## Requirements Coverage\n\n"
-        "Pending / Not Assessed unless supported by the traceability matrix and verification evidence.\n\n"
-        "## Risk-Control Verification\n\n"
-        "Pending / Not Verified unless supplied records identify the risk control, linked test, "
-        "result, and objective evidence.\n\n"
-        "## Open Anomalies\n\n"
-        "Use supplied anomaly records only; otherwise state that anomaly records were not provided "
-        "and status is not assessed.\n\n"
-        "## Conclusions\n\n"
-        "Verification conclusions and release decisions require reviewed execution evidence. "
-        "Do not infer completion or compliance from generated test documentation.\n\n"
-        "## Review and Approval\n\n"
-        "| Role | Name | Signature | Date | Status |\n"
-        "|---|---|---|---|---|\n"
-        "| Reviewer | Not provided | Pending | Pending | Pending |\n"
-        "| Approver | Not provided | Pending | Pending | Pending |\n\n"
-        "## Project-Specific Summary\n\n"
-        "Synthesize only supplied project records. This AI-generated summary is not "
-        "verification evidence or approval.\n\n"
-        f"{summary}"
-    )
-
-    return [
-        plan,
-        verification_protocol,
-        traceability_matrix,
-        verification_summary,
-    ]
+    documents = [plan, protocol, matrix, summary]
+    return documents
 
 
 def _write_document_package(
@@ -436,18 +635,14 @@ def _write_document_package(
     """Write mode-specific Markdown deliverables and a ZIP bundle."""
     task_outputs = getattr(result, "tasks_output", [])
     mode = DocumentationMode(documentation_mode)
-    if mode is DocumentationMode.GENERAL_SOFTWARE:
-        documents = GENERAL_SOFTWARE_DOCUMENTS
-        contents = _general_software_documents(task_outputs, result)
-    elif mode is DocumentationMode.MEDICAL_DEVICE_SOFTWARE:
-        documents = MEDICAL_DEVICE_SOFTWARE_DOCUMENTS
-        contents = _medical_device_software_documents(
-            task_outputs,
-            result,
-            _has_verification_execution_evidence(document_context),
-        )
-    else:
-        raise ValueError(f"Unsupported documentation mode: {mode}")
+    profile = DOCUMENT_MODE_PROFILES[mode]
+    documents = profile["documents"]
+    contents = _build_document_contents(
+        task_outputs,
+        result,
+        mode,
+        document_context,
+    )
 
     safe_topic = re.sub(r"[^a-zA-Z0-9]+", "-", topic).strip("-").lower() or "software-project"
     output_dir = Path(tempfile.mkdtemp(prefix=f"{safe_topic}-test-docs-"))
@@ -477,28 +672,44 @@ def _write_document_package(
     return generated_files, str(archive_path)
 
 
+def _run_generation_pipeline(topic, uploaded_files, documentation_mode):
+    mode = DocumentationMode(documentation_mode)
+    document_context = _build_document_context(uploaded_files)
+    inputs = _build_crew_inputs(topic.strip(), document_context, mode)
+    result = TestStrategyProtocolGenerator().crew().kickoff(inputs=inputs)
+    document_files, archive_file = _write_document_package(
+        result,
+        topic.strip(),
+        mode,
+        document_context,
+    )
+    status = (
+        f"Generated {len(DOCUMENT_MODE_PROFILES[mode]['documents'])} "
+        f"separate testing documents for {topic.strip()}."
+    )
+    return result, document_files, archive_file, status
+
+
 def _build_crew_inputs(
     topic: str,
     document_context: str,
     documentation_mode: DocumentationMode | str = DocumentationMode.GENERAL_SOFTWARE,
 ):
     mode = DocumentationMode(documentation_mode)
-    execution_evidence_supplied = (
-        mode is DocumentationMode.MEDICAL_DEVICE_SOFTWARE
-        and _has_verification_execution_evidence(document_context)
-    )
+    profile = DOCUMENT_MODE_PROFILES[mode]
     return {
         "topic": topic,
         "current_year": str(datetime.now().year),
         "document_context": document_context,
         "documentation_mode": mode.value,
-        "test_design_output_instructions": (
-            GENERAL_TEST_DESIGN_OUTPUT_INSTRUCTIONS
-            if mode is DocumentationMode.GENERAL_SOFTWARE
-            else MEDICAL_DEVICE_TRACEABILITY_INSTRUCTIONS
-            if mode is DocumentationMode.MEDICAL_DEVICE_SOFTWARE
-            else ""
+        "requirements_output_instructions": (
+            MEDICAL_DEVICE_REQUIREMENTS_OUTPUT_INSTRUCTIONS
+            if profile["medical_device"]
+            else GENERAL_REQUIREMENTS_OUTPUT_INSTRUCTIONS
         ),
+        "test_design_output_instructions": MEDICAL_DEVICE_TRACEABILITY_INSTRUCTIONS
+        if profile["medical_device"]
+        else GENERAL_TEST_DESIGN_OUTPUT_INSTRUCTIONS,
         "medical_device_mode_instructions": (
             MEDICAL_DEVICE_MODE_INSTRUCTIONS
             if mode is DocumentationMode.MEDICAL_DEVICE_SOFTWARE
@@ -519,12 +730,12 @@ def _build_crew_inputs(
             + (
                 " Source-record check: test-case-linked execution results and an objective "
                 "evidence reference were supplied."
-                if execution_evidence_supplied
+                if _has_verification_execution_evidence(document_context)
                 else " Source-record check: no qualifying test-case-linked execution results "
                 "and objective evidence reference were identified; report execution as "
                 "Pending / Not Executed and do not state actual results."
             )
-            if mode is DocumentationMode.MEDICAL_DEVICE_SOFTWARE
+            if profile["medical_device"]
             else ""
         ),
     }
@@ -537,14 +748,9 @@ def run(
     """
     Run the crew with a default or supplied topic.
     """
-    inputs = _build_crew_inputs(
-        topic,
-        "No project documents were uploaded. Use the topic and general software testing practices only. State assumptions and do not assume a specific industry.",
-        documentation_mode,
-    )
-
     try:
-        return TestStrategyProtocolGenerator().crew().kickoff(inputs=inputs)
+        result, _, _, _ = _run_generation_pipeline(topic, [], documentation_mode)
+        return result
     except Exception as e:
         raise Exception(f"An error occurred while running the crew: {e}")
 
@@ -559,20 +765,11 @@ def launch_gradio_app():
         if not all_documents_added:
             raise gr.Error("Please confirm that all required documents were uploaded.")
 
-        document_context = _build_document_context(uploaded_files)
-        inputs = _build_crew_inputs(topic.strip(), document_context, documentation_mode)
-
-        result = TestStrategyProtocolGenerator().crew().kickoff(inputs=inputs)
-        document_files, archive_file = _write_document_package(
-            result, topic.strip(), documentation_mode, document_context
+        _, document_files, archive_file, status = _run_generation_pipeline(
+            topic,
+            uploaded_files,
+            documentation_mode,
         )
-        selected_mode = DocumentationMode(documentation_mode)
-        document_count = len(
-            GENERAL_SOFTWARE_DOCUMENTS
-            if selected_mode is DocumentationMode.GENERAL_SOFTWARE
-            else MEDICAL_DEVICE_SOFTWARE_DOCUMENTS
-        )
-        status = f"Generated {document_count} separate testing documents for {topic.strip()}."
         return document_files, archive_file, status
 
     with gr.Blocks(title="Test Strategy Protocol Generator") as demo:
