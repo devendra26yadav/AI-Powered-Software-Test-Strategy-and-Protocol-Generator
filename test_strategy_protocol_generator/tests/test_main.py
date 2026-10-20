@@ -1,5 +1,6 @@
 from io import BytesIO
 import json
+import time
 import unittest
 import zipfile
 from pathlib import Path
@@ -10,10 +11,17 @@ from openpyxl import load_workbook
 
 from test_strategy_protocol_generator.main import (
     DocumentationMode,
+    FastGenerationOutput,
+    FastRequirement,
+    FastRisk,
+    FastTestCase,
+    GenerationSpeed,
     GENERAL_TEST_DESIGN_OUTPUT_INSTRUCTIONS,
     GENERAL_REQUIREMENTS_OUTPUT_INSTRUCTIONS,
     GENERAL_SOFTWARE_DOCUMENTS,
     DOCUMENT_MODE_PROFILES,
+    DEMO_SAMPLE_ARCHIVES,
+    DEMO_SAMPLE_DIRECTORY,
     MEDICAL_DEVICE_MODE_INSTRUCTIONS,
     MEDICAL_DEVICE_PROTOCOL_INSTRUCTIONS,
     MEDICAL_DEVICE_SOFTWARE_DOCUMENTS,
@@ -23,11 +31,14 @@ from test_strategy_protocol_generator.main import (
     _build_crew_inputs,
     _build_document_contents,
     _build_traceability_matrix,
+    _fast_output_to_task_outputs,
     _extract_markdown_section,
     _has_verification_execution_evidence,
     _mark_cases_not_executed,
+    _normalize_fast_generation_identifiers,
     _remove_markdown_section,
     _run_generation_pipeline,
+    _validate_fast_generation_output,
     _validate_document_quality,
     _write_document_package,
 )
@@ -56,6 +67,49 @@ def _read_xlsx(content: bytes) -> str:
 def _zip_members(content: bytes) -> list[str]:
     with zipfile.ZipFile(BytesIO(content)) as archive:
         return archive.namelist()
+
+
+def _fast_sample_output(medical: bool = False) -> FastGenerationOutput:
+    requirements = [
+        FastRequirement(
+            id=f"REQ-F-{index:03d}",
+            category="functional",
+            description=f"Sample inventory requirement {index}",
+        )
+        for index in range(1, 6)
+    ]
+    cases = [
+        FastTestCase(
+            id=f"TC-{index:03d}",
+            requirement_ids=[f"REQ-F-{index:03d}"],
+            risk_ids=["RSK-001"] if medical else [],
+            risk_control_ids=["RC-001"] if medical else [],
+            risk_rationale="Source risk: concurrent updates may produce incorrect quantities."
+            if medical
+            else "",
+            objective=f"Verify requirement {index}",
+            priority="High",
+            preconditions=["A test inventory account is available"],
+            steps=[f"Perform action {index}"],
+            expected_result=f"Requirement {index} is satisfied",
+        )
+        for index in range(1, 6)
+    ]
+    return FastGenerationOutput(
+        requirements=requirements,
+        risks=[
+            FastRisk(
+                id="RSK-001",
+                description="Concurrent stock updates may produce incorrect quantities.",
+                control_ids=["RC-001"],
+            )
+        ] if medical else [],
+        scope=["Verify inventory item management and stock movement workflows."],
+        strategy=["Prioritize core functional flows and boundary conditions."],
+        acceptance_criteria=["Every selected case maps to an extracted requirement."],
+        test_cases=cases,
+        review_items=["Confirm all source requirements are represented."],
+    )
 
 
 class TaskOutput:
@@ -279,8 +333,11 @@ class BuildCrewInputsTests(unittest.TestCase):
                         {"status": "PASS", "checks": []},
                     )
 
-                    returned_result, files, archive, status, report = _run_generation_pipeline(
-                        " Example ", [], mode
+                    returned_result, files, archive, status, report, timings = _run_generation_pipeline(
+                        " Example ",
+                        [],
+                        mode,
+                        GenerationSpeed.FULL,
                     )
 
                     self.assertIs(returned_result, result)
@@ -288,10 +345,154 @@ class BuildCrewInputsTests(unittest.TestCase):
                     self.assertIn("Generated 4", status)
                     self.assertIn("PASS", status)
                     self.assertEqual(report["status"], "PASS")
+                    self.assertIn("ai_generation", timings)
+                    self.assertIn("Generation speed: Full Generation", status)
                     kickoff_inputs = crew_class.return_value.crew.return_value.kickoff.call_args.kwargs["inputs"]
                     self.assertEqual(kickoff_inputs["documentation_mode"], mode.value)
                     writer.assert_called_once()
                     self.assertEqual(writer.call_args.args[2], mode)
+
+    def test_demo_mode_loads_local_sample_without_processing_uploads_or_ai(self):
+        sample_report = {"status": "PASS", "checks": []}
+        with (
+            patch(
+                "test_strategy_protocol_generator.main._load_demo_sample",
+                return_value=(["sample.docx"], "sample.zip", sample_report),
+            ) as load_sample,
+            patch("test_strategy_protocol_generator.main._build_document_context") as read_uploads,
+            patch("test_strategy_protocol_generator.main.TestStrategyProtocolGenerator") as crew,
+        ):
+            result, files, archive, status, report, timings = _run_generation_pipeline(
+                "Unrelated uploaded project",
+                ["new_requirements.md"],
+                DocumentationMode.GENERAL_SOFTWARE,
+                GenerationSpeed.DEMO_SAMPLE,
+            )
+
+        self.assertIsNone(result)
+        self.assertEqual((files, archive, report), (["sample.docx"], "sample.zip", sample_report))
+        self.assertIn("PRE-GENERATED DEMO SAMPLE", status)
+        self.assertIn("were not read or processed", status)
+        self.assertEqual(timings["ai_generation"], 0.0)
+        load_sample.assert_called_once_with(DocumentationMode.GENERAL_SOFTWARE)
+        read_uploads.assert_not_called()
+        crew.assert_not_called()
+
+    def test_bundled_demo_samples_are_complete_and_visibly_labeled(self):
+        expected_notice = "PRE-GENERATED DEMO SAMPLE - uploaded requirements were not processed."
+        for mode in DocumentationMode:
+            with self.subTest(mode=mode.value):
+                sample_path = DEMO_SAMPLE_DIRECTORY / DEMO_SAMPLE_ARCHIVES[mode]
+                expected_names = {
+                    filename for filename, _ in DOCUMENT_MODE_PROFILES[mode]["documents"]
+                } | {"validation_report.json"}
+                with zipfile.ZipFile(sample_path) as archive:
+                    self.assertEqual(set(archive.namelist()), expected_names)
+                    for filename, _title in DOCUMENT_MODE_PROFILES[mode]["documents"]:
+                        content = archive.read(filename)
+                        if filename.endswith(".docx"):
+                            visible_content = _read_docx(content)
+                        else:
+                            visible_content = _read_xlsx(content)
+                        self.assertIn(expected_notice, visible_content)
+                    report = json.loads(archive.read("validation_report.json"))
+                    self.assertTrue(report["pre_generated_sample"])
+                    self.assertEqual(report["sample_notice"], expected_notice)
+
+    def test_demo_generation_uses_bundled_sample_under_three_seconds(self):
+        for mode in DocumentationMode:
+            with self.subTest(mode=mode.value):
+                started = time.perf_counter()
+                result, files, archive, status, report, timings = _run_generation_pipeline(
+                    "New uploaded project",
+                    ["requirements.md"],
+                    mode,
+                    GenerationSpeed.DEMO_SAMPLE,
+                )
+                elapsed = time.perf_counter() - started
+                output_directory = Path(files[0]).parent
+                try:
+                    self.assertIsNone(result)
+                    self.assertEqual(len(files), 4)
+                    self.assertTrue(Path(archive).is_file())
+                    self.assertIn("uploaded files were not read or processed", status)
+                    self.assertTrue(report["pre_generated_sample"])
+                    self.assertLess(elapsed, 3.0, f"Demo Mode took {elapsed:.3f}s")
+                    self.assertLess(timings["total"], 3.0)
+                finally:
+                    for file_path in [*files, archive]:
+                        Path(file_path).unlink(missing_ok=True)
+                    output_directory.rmdir()
+
+    def test_fast_ai_mode_reuses_one_structured_output(self):
+        output = _fast_sample_output()
+        result = type("FastResult", (), {"tasks_output": [], "raw": ""})()
+        with (
+            patch(
+                "test_strategy_protocol_generator.main._build_document_context",
+                return_value="Uploaded requirement: inventory records must be searchable.",
+            ),
+            patch(
+                "test_strategy_protocol_generator.main._run_fast_ai_generation",
+                return_value=output,
+            ) as fast_generation,
+            patch(
+                "test_strategy_protocol_generator.main._write_document_package",
+                return_value=(["sample.docx"], "sample.zip", {"status": "PASS", "checks": []}),
+            ) as writer,
+        ):
+            _result, files, archive, status, report, timings = _run_generation_pipeline(
+                "Inventory sample",
+                ["requirements.md"],
+                DocumentationMode.GENERAL_SOFTWARE,
+                GenerationSpeed.FAST_AI,
+            )
+
+        fast_generation.assert_called_once()
+        writer.assert_called_once()
+        self.assertEqual(writer.call_args.args[0].tasks_output[2].raw.startswith("## Functional"), True)
+        self.assertEqual((files, archive), (["sample.docx"], "sample.zip"))
+        self.assertEqual(report["status"], "PASS")
+        self.assertIn("Fast AI Generation", status)
+        self.assertIn("ai_generation", timings)
+
+    def test_fast_ai_structured_output_requires_five_to_ten_cases_and_valid_links(self):
+        output = _fast_sample_output()
+        _validate_fast_generation_output(
+            output, DocumentationMode.GENERAL_SOFTWARE, "Requirements supplied"
+        )
+        too_few = output.model_copy(update={"test_cases": output.test_cases[:4]})
+
+        with self.assertRaisesRegex(ValueError, "expected 5 to 10"):
+            _validate_fast_generation_output(
+                too_few, DocumentationMode.GENERAL_SOFTWARE, "Requirements supplied"
+            )
+
+    def test_fast_ai_normalizes_requirement_and_case_ids_consistently(self):
+        output = _fast_sample_output()
+        output.requirements[0].id = "REQ-1"
+        output.requirements[0].category = "Business Rule"
+        output.test_cases[0].id = "case-one"
+        output.test_cases[0].requirement_ids = ["REQ-1"]
+
+        normalized = _normalize_fast_generation_identifiers(output)
+
+        self.assertEqual(normalized.requirements[0].id, "REQ-F-001")
+        self.assertEqual(normalized.requirements[0].category, "functional")
+        self.assertEqual(normalized.test_cases[0].id, "TC-001")
+        self.assertEqual(normalized.test_cases[0].requirement_ids, ["REQ-F-001"])
+        _validate_fast_generation_output(
+            normalized, DocumentationMode.GENERAL_SOFTWARE, "Requirements supplied"
+        )
+
+    def test_fast_ai_rejects_medical_risk_ids_absent_from_uploaded_source(self):
+        output = _fast_sample_output(medical=True)
+        with self.assertRaisesRegex(ValueError, "absent from source material"):
+            _validate_fast_generation_output(
+                output,
+                DocumentationMode.MEDICAL_DEVICE_SOFTWARE,
+                "REQ-F-001 is a requirement; no risk identifiers provided.",
+            )
 
 
 class DocumentPackageTests(unittest.TestCase):
@@ -486,8 +687,8 @@ class DocumentPackageTests(unittest.TestCase):
                     read_only=True,
                     data_only=True,
                 )
-                self.assertEqual(matrix_workbook.active["A5"].value, "Requirement ID")
-                self.assertEqual(matrix_workbook.active["B5"].value, "Test Case ID")
+                self.assertEqual(matrix_workbook.active["A6"].value, "Requirement ID")
+                self.assertEqual(matrix_workbook.active["B6"].value, "Test Case ID")
 
             self.assertIn("Project scope and acceptance criteria", plan)
             self.assertIn("Test strategy and environment", plan)
@@ -655,8 +856,8 @@ class DocumentPackageTests(unittest.TestCase):
                     read_only=True,
                     data_only=True,
                 )
-                self.assertEqual(medical_matrix.active["A5"].value, "Requirement ID")
-                self.assertEqual(medical_matrix.active["C5"].value, "Risk Control")
+                self.assertEqual(medical_matrix.active["A6"].value, "Requirement ID")
+                self.assertEqual(medical_matrix.active["C6"].value, "Risk Control")
 
             self.assertIn("Project scope and acceptance criteria", plan)
             for section in (

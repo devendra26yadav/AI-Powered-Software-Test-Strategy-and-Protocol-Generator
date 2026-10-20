@@ -1,8 +1,8 @@
 planning_task:
   description: >
-    Act as the project lead for {topic}. Define the overall testing objectives, sequencing,
-    responsibilities, and success criteria. Outline how the team will move from research to
-    requirements, strategy, test design, validation, and reporting. Treat {topic} as any kind
+    Act as the project lead for {topic}. Define concise testing objectives, responsibilities,
+    priorities, and success criteria. Avoid narrating the team's workflow or repeating details
+    covered by the requirements, strategy, and protocol. Treat {topic} as any kind
     of software product or system. Tailor the work to the project context and do not assume a
     particular industry or regulatory regime.
     {medical_device_mode_instructions}
@@ -10,13 +10,12 @@ planning_task:
     Use the uploaded project documents as context when they are provided. Document context:
     {document_context}
   expected_output: >
-    A concise project plan and execution brief that defines the team workflow, priorities, deliverables,
-    and decision points for the test strategy work.
+    A short project scope and priorities, with only decisions needed to guide testing.
   agent: test_lead
 
 research_task:
   description: >
-    Research relevant software quality practices, standards, test techniques, tools, and risks for
+    Identify 3-5 relevant software quality practices, standards, test techniques, and risks for
     {topic}. Tailor findings to the product type and technology shown in the uploaded documents.
     For General Software, do not assume a regulated domain. Do not invent sources, standards, or
     project facts; label assumptions and identify where current verification is needed.
@@ -25,66 +24,59 @@ research_task:
     Use the following uploaded project documentation as additional evidence and context:
     {document_context}
   expected_output: >
-    A concise but evidence-based summary of the 10 most relevant findings about {topic},
-    including why they matter to a software testing strategy.
+    A brief, source-specific list of the most relevant findings and their testing impact.
   agent: researcher
 
 requirements_task:
   description: >
-    Review the project context and define the functional, non-functional, business, security,
-    accessibility, compatibility, and operational requirements relevant to testing {topic}.
+    Extract testable functional and non-functional requirements from project sources for {topic}.
+    Do not create a requirement unless the source supports it.
     For General Software, include regulatory or compliance requirements only when supported by
     the supplied context.
-    Highlight gaps, assumptions, and scope boundaries.
+    Keep each requirement to one sentence; list only consequential gaps or assumptions.
     {requirements_output_instructions}
     {medical_device_mode_instructions}
     Use the uploaded documentation as supporting context:
     {document_context}
   expected_output: >
-    A structured requirements brief covering functional and nonfunctional requirements, scope,
-    quality objectives, constraints, dependencies, and a prioritized list of testable requirements
-    with stable IDs assigned according to the mode instructions.
+    All relevant source-supported testable requirements, concisely stated with stable IDs.
   agent: requirements_analyst
 
 strategy_task:
   description: >
-    Based on the research and requirements, design a complete test strategy for {topic}.
-    Include test levels, entry/exit criteria, coverage model, test design techniques,
-    tooling, environment needs, and release readiness approach.
+    Based on the research and requirements, state only the testing approach needed for {topic}:
+    test levels, environment, entry/exit criteria, and measurable acceptance criteria. Avoid
+    repeating requirement descriptions or giving generic testing advice.
     {medical_device_mode_instructions}
     {medical_device_test_plan_instructions}
     Incorporate inputs from the uploaded documents and the project context below:
     {document_context}
   expected_output: >
-    A comprehensive test strategy document with objectives, scope, coverage approach, test types,
-    lifecycle phases, and execution plan for {topic}.
+    A concise, project-specific strategy with scope, approach, environment, and acceptance criteria.
   agent: test_strategy_architect
 
 test_protocol_task:
   description: >
-    Create an executable test protocol for {topic} using the agreed scope, requirements, and
-    strategy. Specify test phases, environment and data needs, roles, entry and exit criteria,
-    execution workflow, evidence to retain, defect severity and escalation, and release decisions.
-    Keep the protocol appropriate to the software type and identify unresolved assumptions.
+    Create a concise executable protocol for {topic}. State only prerequisites, environment/data,
+    execution and evidence steps, pass/fail handling, and unresolved decisions. Do not repeat
+    strategy or test-case details; test cases are provided separately.
     {medical_device_mode_instructions}
     {medical_device_protocol_instructions}
     Project documents:
     {document_context}
   expected_output: >
-    A standalone test protocol that a delivery team can follow, with clear phases, responsibilities,
-    prerequisites, pass and fail criteria, defect handling, and release sign-off conditions.
+    Brief execution instructions, prerequisites, evidence handling, and pass/fail criteria.
   agent: test_strategy_architect
 
 test_design_task:
   description: >
-    Design representative test suites and detailed test cases for {topic}, traceable to the
+    Design concise, relevant test cases for {topic}, traceable to the
     requirement IDs from requirements analysis and risk/risk-control IDs from risk analysis.
     Reuse identifiers exactly; never create an unmapped requirement or risk ID. Cover applicable
-    positive, negative, boundary, integration, regression,
-    security, accessibility, and performance scenarios. For each case include an ID, objective,
+    only applicable scenarios and avoid near-duplicates. For each case include an ID, objective,
     priority, test level, preconditions, steps, expected result, and linked requirement ID(s) and
     risk/risk-control ID(s) where applicable.
-    Avoid inventing product behavior that is not in the context; mark assumptions explicitly.
+    Use short steps and one measurable expected result. Do not invent product behavior.
     {medical_device_mode_instructions}
     {medical_device_protocol_instructions}
     {test_design_output_instructions}
@@ -95,42 +87,36 @@ test_design_task:
     Project documents:
     {document_context}
   expected_output: >
-    A standalone output with the required mode-specific traceability matrix and test case sections,
-    plus any assumptions requiring confirmation. Do not duplicate the matrix in the test cases.
+    The required mode-specific matrix and concise test cases. Do not duplicate the matrix in cases.
   agent: quality_assurance_engineer
 
 automation_assessment_task:
   description: >
-    Compare manual and automated testing for {topic}. Identify which test activities are best kept
-    manual, which should be automated, and which are candidates for a hybrid approach. Compare
-    value, repeatability, setup and maintenance cost, feedback speed, required skills, and limitations.
-    Recommend an incremental automation roadmap and suitable tool categories without assuming a
-    specific technology stack unless the documents identify one.
+    Identify the most valuable manual and automated testing activities for {topic}. Give only
+    project-supported candidates, key trade-offs, and a short next step. Do not assume tools.
     Project documents:
     {document_context}
   expected_output: >
-    A standalone manual-versus-automation assessment with a comparison matrix, prioritized
-    automation candidates, rationale, tool categories, and an incremental adoption roadmap.
+    A short list of prioritized automation candidates with brief rationale and key manual checks.
   agent: test_strategy_architect
 
 quality_task:
   description: >
-    Critically review the draft strategy and verify that it is practical, measurable, and executable.
-    Check for missing quality gates, unclear roles, incomplete test cases, and gaps in release validation.
+    Review the draft for concrete traceability, execution, or acceptance gaps. Report only actionable
+    findings; do not restate content that already passes review.
     {medical_device_mode_instructions}
     {medical_device_summary_instructions}
     Use the uploaded project documents as validation context:
     {document_context}
   expected_output: >
-    A QA validation report that identifies weaknesses, recommends improvements, and confirms
-    the strategy is realistic for delivery and release operations.
+    A short list of actionable issues or "No additional issues identified."
   agent: quality_assurance_engineer
 
 risk_task:
   description: >
-    Evaluate product, technical, security, operational, delivery, and domain-specific risks for
-    {topic}. Include compliance risks only when relevant to the project context. Identify failure
-    modes, affected requirements, likelihood, impact, mitigations, and residual risks.
+    Identify only source-supported risks relevant to testing {topic}, prioritizing at most five.
+    Include compliance risks only when relevant. State affected requirement, impact, and mitigation
+    briefly; do not invent likelihood or acceptance ratings.
     {medical_device_mode_instructions}
     For Medical Device Software, preserve supplied risk identifiers and distinguish hazards,
     hazardous situations, harms, risk controls, and residual risk only where the source records
@@ -138,13 +124,13 @@ risk_task:
     Review the uploaded project documents for risk evidence and scope constraints:
     {document_context}
   expected_output: >
-    A risk register with ranked risks, causes, affected areas, impact, likelihood, and mitigation actions.
+    A concise list of relevant source-supported risks, controls, and unknowns.
   agent: risk_manager
 
 reporting_task:
   description: >
-    Create a concise summary for {topic} covering key decisions, assumptions, unresolved questions,
-    and release readiness. Do not replace or collapse the standalone deliverables into this summary.
+    Create a brief summary for {topic} with only important decisions, unresolved questions, and
+    execution readiness. Do not repeat requirements, test cases, or matrix rows.
     For Medical Device Software, follow the verification summary sections, use only supplied
     execution evidence, and synthesize findings without duplicating full test cases or matrix rows.
     Use the uploaded project documents and all prior outputs as part of the final evidence base:
@@ -152,7 +138,6 @@ reporting_task:
     {medical_device_summary_instructions}
     {document_context}
   expected_output: >
-    A standalone markdown executive summary with links or filenames for each generated deliverable,
-    key recommendations, assumptions, and open decisions.
+    A short markdown summary with only actionable recommendations, assumptions, and open decisions.
     Formatted as markdown without '```'
   agent: reporting_analyst

@@ -1,8 +1,11 @@
 #!/usr/bin/env python
+import logging
 import sys
 import json
 import re
+import shutil
 import tempfile
+import time
 import warnings
 import zipfile
 
@@ -10,19 +13,64 @@ from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from docx import Document
+from docx.shared import RGBColor
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 
 import gradio as gr
+from crewai import Crew, Process, Task
+from pydantic import BaseModel, Field
 
 from test_strategy_protocol_generator.crew import TestStrategyProtocolGenerator
 
 warnings.filterwarnings("ignore", category=SyntaxWarning, module="pysbd")
+logger = logging.getLogger(__name__)
 
 
 class DocumentationMode(str, Enum):
     GENERAL_SOFTWARE = "General Software"
     MEDICAL_DEVICE_SOFTWARE = "Medical Device Software"
+
+
+class GenerationSpeed(str, Enum):
+    DEMO_SAMPLE = "Demo Mode (Instant Sample)"
+    FAST_AI = "Fast AI Generation"
+    FULL = "Full Generation"
+
+
+class FastRequirement(BaseModel):
+    id: str
+    category: str
+    description: str
+
+
+class FastRisk(BaseModel):
+    id: str | None = None
+    description: str
+    control_ids: list[str] = Field(default_factory=list)
+
+
+class FastTestCase(BaseModel):
+    id: str
+    requirement_ids: list[str]
+    risk_ids: list[str] = Field(default_factory=list)
+    risk_control_ids: list[str] = Field(default_factory=list)
+    risk_rationale: str = ""
+    objective: str
+    priority: str
+    preconditions: list[str] = Field(default_factory=list)
+    steps: list[str]
+    expected_result: str
+
+
+class FastGenerationOutput(BaseModel):
+    requirements: list[FastRequirement]
+    risks: list[FastRisk] = Field(default_factory=list)
+    scope: list[str]
+    strategy: list[str]
+    acceptance_criteria: list[str]
+    test_cases: list[FastTestCase]
+    review_items: list[str] = Field(default_factory=list)
 
 
 GENERAL_TEST_DESIGN_OUTPUT_INSTRUCTIONS = (
@@ -153,6 +201,12 @@ DOCUMENT_MODE_PROFILES = {
         "medical_device": True,
     },
 }
+
+DEMO_SAMPLE_ARCHIVES = {
+    DocumentationMode.GENERAL_SOFTWARE: "general_software.zip",
+    DocumentationMode.MEDICAL_DEVICE_SOFTWARE: "medical_device_software.zip",
+}
+DEMO_SAMPLE_DIRECTORY = Path(__file__).resolve().parents[2] / "test_data" / "demo_samples"
 
 
 def _extract_text_from_file(file_path: str) -> str:
@@ -930,7 +984,14 @@ def _markdown_table_rows(lines: list[str]) -> list[list[str]]:
     ]
 
 
-def _write_docx(path: Path, title: str, project: str, mode: DocumentationMode, content: str) -> None:
+def _write_docx(
+    path: Path,
+    title: str,
+    project: str,
+    mode: DocumentationMode,
+    content: str,
+    sample_label: str | None = None,
+) -> None:
     document = Document()
     document.core_properties.title = title
     document.core_properties.subject = f"{mode.value} test documentation"
@@ -939,6 +1000,11 @@ def _write_docx(path: Path, title: str, project: str, mode: DocumentationMode, c
     document.add_heading(title, level=0)
     document.add_paragraph(f"Project: {project}")
     document.add_paragraph(f"Documentation Mode: {mode.value}")
+    if sample_label:
+        paragraph = document.add_paragraph()
+        run = paragraph.add_run(sample_label)
+        run.bold = True
+        run.font.color.rgb = RGBColor(156, 0, 6)
 
     lines = content.splitlines()
     index = 0
@@ -986,7 +1052,12 @@ def _write_docx(path: Path, title: str, project: str, mode: DocumentationMode, c
 
 
 def _write_matrix_xlsx(
-    path: Path, title: str, project: str, mode: DocumentationMode, content: str
+    path: Path,
+    title: str,
+    project: str,
+    mode: DocumentationMode,
+    content: str,
+    sample_label: str | None = None,
 ) -> None:
     workbook = Workbook()
     worksheet = workbook.active
@@ -994,6 +1065,7 @@ def _write_matrix_xlsx(
     worksheet.append([title])
     worksheet.append([f"Project: {project}"])
     worksheet.append([f"Documentation Mode: {mode.value}"])
+    worksheet.append([sample_label] if sample_label else [])
     worksheet.append([])
 
     table_lines = []
@@ -1008,12 +1080,12 @@ def _write_matrix_xlsx(
     if rows:
         for row in rows:
             worksheet.append(row)
-        header_row = 5
+        header_row = 6
         for cell in worksheet[header_row]:
             cell.font = Font(bold=True, color="FFFFFF")
             cell.fill = PatternFill("solid", fgColor="1F4E78")
             cell.alignment = Alignment(wrap_text=True, vertical="top")
-        worksheet.freeze_panes = "A6"
+        worksheet.freeze_panes = "A7"
         worksheet.auto_filter.ref = worksheet.dimensions
         for column in worksheet.columns:
             width = min(
@@ -1027,8 +1099,8 @@ def _write_matrix_xlsx(
         worksheet.append(["Traceability matrix content"])
         worksheet.append([content or "Not provided; review required."])
         worksheet.column_dimensions["A"].width = 100
-        worksheet["A5"].font = Font(bold=True)
-        worksheet["A6"].alignment = Alignment(wrap_text=True, vertical="top")
+        worksheet["A6"].font = Font(bold=True)
+        worksheet["A7"].alignment = Alignment(wrap_text=True, vertical="top")
     workbook.properties.title = title
     workbook.properties.subject = f"{mode.value} traceability matrix"
     workbook.properties.creator = "Test Strategy Protocol Generator"
@@ -1071,14 +1143,9 @@ def _build_document_contents(
     # The protocol and matrix both link to stable IDs, but only the protocol owns case detail.
     test_cases = _remove_markdown_section(test_cases, profile["matrix_heading"])
 
-    plan_parts = [
-        outputs["planning"],
-        outputs["requirements"],
-        outputs["strategy"],
-        outputs["automation"],
-    ]
-    if profile["medical_device"]:
-        plan_parts.insert(1, outputs["research"])
+    plan_parts = [outputs["planning"], outputs["requirements"], outputs["strategy"]]
+    if profile["medical_device"] and outputs["risk"]:
+        plan_parts.append(outputs["risk"])
     plan = "\n\n".join(section for section in plan_parts if section)
     if profile["medical_device"]:
         plan = _ensure_markdown_sections(
@@ -1182,13 +1249,370 @@ def _build_document_contents(
     return documents
 
 
+def _report_stage(timings: dict[str, float], stage: str, started_at: float) -> None:
+    elapsed = time.perf_counter() - started_at
+    timings[stage] = elapsed
+    logger.info("generation_stage stage=%s elapsed_seconds=%.3f", stage, elapsed)
+
+
+def _update_progress(progress, value: float, description: str) -> None:
+    if progress is not None:
+        progress(value, desc=description)
+
+
+def _fast_generation_prompt(
+    topic: str,
+    mode: DocumentationMode,
+    document_context: str,
+) -> str:
+    device_addendum = (
+        "For Medical Device Software, use a risk-based verification focus. Preserve only "
+        "risk and risk-control identifiers explicitly present in the source. Do not infer "
+        "a safety classification, intended use, compliance, or regulatory applicability. "
+        "Use IEC 62304, ISO 14971, ISO 13485, and FDA QMSR as design references only. "
+        "If risks are described without IDs, describe the source risk theme without creating IDs."
+        if mode is DocumentationMode.MEDICAL_DEVICE_SOFTWARE
+        else "Do not add medical-device-specific standards, classifications, or documents."
+    )
+    return (
+        "Create one concise, internally consistent set of structured test data for "
+        f"{topic!r} in {mode.value} mode.\n"
+        "Analyze the supplied project documents once. Extract testable requirements and "
+        "assign sequential REQ-F-001 or REQ-NF-001 IDs by requirement category. Do not "
+        "omit source requirements that can be tested. Do not add background, repeat facts, "
+        "invent project details, or claim execution. Use one short sentence per requirement. "
+        "Produce exactly 5 representative test cases with unique IDs such as TC-001. Every "
+        "case must link to extracted requirement IDs and have 2-4 brief steps plus one "
+        "measurable expected result. Keep scope to 2 bullets, strategy and acceptance "
+        "criteria to 3 bullets each, and review_items to actionable gaps only. Set risk "
+        "and control IDs only when they exactly occur in source material. If execution "
+        "evidence is absent, leave execution as Not Executed / Not provided.\n"
+        f"{device_addendum}\n"
+        "Return data matching the supplied Pydantic output schema only.\n\n"
+        f"Source documents:\n{document_context}"
+    )
+
+
+def _validate_fast_generation_output(
+    output: FastGenerationOutput,
+    mode: DocumentationMode,
+    document_context: str,
+) -> None:
+    if not output.requirements:
+        raise ValueError("Fast AI generation returned no requirements; review the source documents.")
+    if not 5 <= len(output.test_cases) <= 10:
+        raise ValueError(
+            f"Fast AI generation returned {len(output.test_cases)} test cases; expected 5 to 10. "
+            "Review the source documents or retry."
+        )
+    requirement_ids = [requirement.id for requirement in output.requirements]
+    if len(requirement_ids) != len(set(requirement_ids)):
+        raise ValueError("Fast AI generation returned duplicate requirement identifiers.")
+    if any(not re.fullmatch(r"REQ-(?:F|NF)-\d{3}", identifier) for identifier in requirement_ids):
+        raise ValueError("Fast AI generation returned an invalid requirement identifier.")
+    valid_requirements = set(requirement_ids)
+    for requirement in output.requirements:
+        category = requirement.category.casefold().replace("-", "")
+        expected_prefix = "REQ-F-" if category == "functional" else "REQ-NF-"
+        if category not in {"functional", "nonfunctional"} or not requirement.id.startswith(expected_prefix):
+            raise ValueError(
+                f"{requirement.id} does not match its requirement category."
+            )
+    test_ids = [case.id for case in output.test_cases]
+    if len(test_ids) != len(set(test_ids)):
+        raise ValueError("Fast AI generation returned duplicate test-case identifiers.")
+    if any(not re.fullmatch(r"TC-[A-Z0-9]+(?:-[A-Z0-9]+)*", identifier) for identifier in test_ids):
+        raise ValueError("Fast AI generation returned an invalid test-case identifier.")
+    for case in output.test_cases:
+        if not case.requirement_ids:
+            raise ValueError(f"{case.id} does not reference a requirement.")
+        invalid_ids = set(case.requirement_ids) - valid_requirements
+        if invalid_ids:
+            raise ValueError(f"{case.id} references unknown requirements: {', '.join(sorted(invalid_ids))}.")
+        if not case.steps or not case.expected_result.strip():
+            raise ValueError(f"{case.id} is missing steps or an expected result.")
+    if mode is DocumentationMode.MEDICAL_DEVICE_SOFTWARE:
+        source_risks = set(_risk_ids(document_context))
+        output_risks = {
+            identifier
+            for risk in output.risks
+            for identifier in ([risk.id] if risk.id else []) + risk.control_ids
+        }
+        case_risks = {
+            identifier
+            for case in output.test_cases
+            for identifier in (*case.risk_ids, *case.risk_control_ids)
+        }
+        unknown_risks = (case_risks | output_risks) - source_risks
+        if unknown_risks:
+            raise ValueError(
+                "Fast AI generation returned risk identifiers absent from source material: "
+                + ", ".join(sorted(unknown_risks))
+            )
+
+
+def _normalize_fast_generation_identifiers(
+    output: FastGenerationOutput,
+) -> FastGenerationOutput:
+    requirement_ids = [requirement.id for requirement in output.requirements]
+    if len(requirement_ids) != len(set(requirement_ids)):
+        raise ValueError("Fast AI generation returned duplicate requirement identifiers.")
+    test_ids = [case.id for case in output.test_cases]
+    if len(test_ids) != len(set(test_ids)):
+        raise ValueError("Fast AI generation returned duplicate test-case identifiers.")
+
+    requirement_mapping: dict[str, str] = {}
+    category_counts = {"functional": 0, "nonfunctional": 0}
+    requirements = []
+    for requirement in output.requirements:
+        source_category = re.sub(r"[^a-z0-9]", "", requirement.category.casefold())
+        nonfunctional_terms = (
+            "nonfunctional",
+            "performance",
+            "security",
+            "reliability",
+            "availability",
+            "usability",
+            "scalability",
+            "maintainability",
+            "compatibility",
+            "privacy",
+            "safety",
+        )
+        if any(term in source_category for term in nonfunctional_terms):
+            category = "nonfunctional"
+        elif source_category in {
+            "functional",
+            "business",
+            "businessrule",
+            "feature",
+            "userstory",
+            "usecase",
+        }:
+            category = "functional"
+        else:
+            raise ValueError(
+                f"Fast AI generation returned unsupported requirement category: "
+                f"{requirement.category}."
+            )
+        category_counts[category] += 1
+        prefix = "REQ-F" if category == "functional" else "REQ-NF"
+        normalized_id = f"{prefix}-{category_counts[category]:03d}"
+        requirement_mapping[requirement.id] = normalized_id
+        requirements.append(
+            requirement.model_copy(
+                update={"id": normalized_id, "category": category}
+            )
+        )
+
+    test_cases = [
+        case.model_copy(
+            update={
+                "id": f"TC-{index:03d}",
+                "requirement_ids": [
+                    requirement_mapping.get(identifier, identifier)
+                    for identifier in case.requirement_ids
+                ],
+            }
+        )
+        for index, case in enumerate(output.test_cases, start=1)
+    ]
+    return output.model_copy(update={"requirements": requirements, "test_cases": test_cases})
+
+
+def _fast_output_to_task_outputs(
+    output: FastGenerationOutput,
+    mode: DocumentationMode,
+) -> list:
+    profile = DOCUMENT_MODE_PROFILES[mode]
+    functional = [item for item in output.requirements if item.category.casefold() == "functional"]
+    nonfunctional = [
+        item for item in output.requirements if item.category.casefold() in {"nonfunctional", "non-functional"}
+    ]
+    requirements = ["## Functional Requirements"]
+    requirements.extend(f"- {item.id}: {item.description}" for item in functional)
+    requirements.append("\n## Nonfunctional Requirements")
+    requirements.extend(f"- {item.id}: {item.description}" for item in nonfunctional)
+    requirements_text = "\n".join(requirements)
+
+    planning = "## Project Scope\n" + "\n".join(f"- {item}" for item in output.scope)
+    if mode is DocumentationMode.MEDICAL_DEVICE_SOFTWARE:
+        planning += (
+            "\n\n## Intended Use and Scope\n"
+            "Intended use: Not provided; confirm from approved project records."
+        )
+    strategy = "## Test Strategy\n" + "\n".join(f"- {item}" for item in output.strategy)
+    strategy += "\n\n## Acceptance Criteria\n" + "\n".join(
+        f"- {item}" for item in output.acceptance_criteria
+    )
+    if mode is DocumentationMode.MEDICAL_DEVICE_SOFTWARE:
+        strategy += (
+            "\n\n## Applicable Standards\n"
+            "IEC 62304, ISO 14971, ISO 13485, and applicable FDA QMSR expectations "
+            "are design references only; applicability must be confirmed."
+            "\n\n## Software Safety Classification\n"
+            "Not provided; classification not determined."
+            "\n\n## Risk-Based Testing Strategy\n"
+            "Prioritize source-supported risk themes; verify traceability and risk controls "
+            "before execution. No risk acceptance or compliance conclusion is asserted."
+        )
+
+    risk_lines = ["## Source-Supported Risk Information"]
+    if output.risks:
+        risk_lines.extend(
+            f"- {risk.id + ': ' if risk.id else ''}{risk.description}"
+            + (f" (controls: {', '.join(risk.control_ids)})" if risk.control_ids else "")
+            for risk in output.risks
+        )
+    else:
+        risk_lines.append("No separately identified risk records were supplied.")
+    risks_text = "\n".join(risk_lines)
+
+    matrix_rows = []
+    for requirement in output.requirements:
+        linked_cases = [
+            case for case in output.test_cases
+            if requirement.id in case.requirement_ids
+        ]
+        if not linked_cases:
+            linked_cases = [None]
+        for case in linked_cases:
+            values = {
+                "Requirement ID": requirement.id,
+                "Risk Reference": ", ".join(case.risk_ids) if case and case.risk_ids else "Not provided",
+                "Risk Control": ", ".join(case.risk_control_ids) if case and case.risk_control_ids else "Not provided",
+                "Test Case ID": case.id if case else "Not linked",
+                "Verification Status": "Pending / Not Verified" if profile["medical_device"] else "Pending",
+                "Evidence Reference": "Not provided",
+            }
+            matrix_rows.append("| " + " | ".join(values[column] for column in profile["matrix_columns"]) + " |")
+    matrix_text = (
+        f"## {profile['matrix_heading']}\n\n"
+        "| " + " | ".join(profile["matrix_columns"]) + " |\n"
+        "| " + " | ".join("---" for _ in profile["matrix_columns"]) + " |\n"
+        + "\n".join(matrix_rows)
+    )
+    cases_heading = "Verification Test Cases" if profile["medical_device"] else "Detailed Test Cases"
+    test_cases = [f"## {cases_heading}"]
+    for case in output.test_cases:
+        test_cases.extend(
+            [
+                f"### {case.id}: {case.objective}",
+                f"- **Test Case ID:** {case.id}",
+                f"- **Linked Requirement ID:** {', '.join(case.requirement_ids)}",
+                f"- **Priority:** {case.priority}",
+                f"- **Preconditions:** {'; '.join(case.preconditions) or 'Not provided'}",
+                f"- **Test Steps:** {'; '.join(case.steps)}",
+                f"- **Expected Results:** {case.expected_result}",
+            ]
+        )
+        if profile["medical_device"]:
+            test_cases.append(
+                "- **Linked Risk Control ID:** "
+                + (", ".join(case.risk_control_ids) or "Not provided")
+            )
+            if case.risk_ids:
+                test_cases.append(f"- **Risk Reference:** {', '.join(case.risk_ids)}")
+        if case.risk_rationale:
+            test_cases.append(f"- **Risk Focus:** {case.risk_rationale}")
+        test_cases.extend(
+            [
+                "- **Actual Results:** Not executed; no execution evidence supplied",
+                "- **Test Status:** Not Executed",
+                "- **Objective Evidence Reference:** Not provided",
+            ]
+        )
+    design = matrix_text + "\n\n" + "\n".join(test_cases)
+    review_text = "\n".join(f"- {item}" for item in output.review_items) or "No additional review items."
+    summary = "Fast-generation review items:\n" + review_text
+    automation = "Automation assessment: determine candidates during the full generation workflow."
+
+    task_outputs = [None] * len(TASK_OUTPUT_INDEX)
+    values = {
+        "planning": planning,
+        "research": "Source review is limited to uploaded project documents.",
+        "requirements": requirements_text,
+        "strategy": strategy,
+        "risk": risks_text,
+        "protocol": "",
+        "test_design": design,
+        "automation": automation,
+        "quality": "Fast mode validates structured data and traceability before export.",
+        "reporting": summary,
+    }
+    for name, index in TASK_OUTPUT_INDEX.items():
+        task_outputs[index] = type("FastTaskOutput", (), {"raw": values[name]})()
+    return task_outputs
+
+
+def _run_fast_ai_generation(topic: str, document_context: str, mode: DocumentationMode):
+    generator = TestStrategyProtocolGenerator()
+    full_crew = generator.crew()
+    agent = next(
+        candidate for candidate in full_crew.agents
+        if "Quality Assurance Engineer" in candidate.role
+    )
+    output_schema = FastGenerationOutput
+    task = Task(
+        description=_fast_generation_prompt(topic, mode, document_context),
+        expected_output=(
+            "A Pydantic-structured set of extracted requirements, source-supported risks, "
+            "and 5 to 10 unique requirement-linked test cases with measurable expectations."
+        ),
+        agent=agent,
+        output_pydantic=output_schema,
+    )
+    fast_crew = Crew(
+        agents=[agent],
+        tasks=[task],
+        process=Process.sequential,
+        verbose=True,
+    )
+    result = fast_crew.kickoff(inputs={"topic": topic})
+    structured = getattr(result.tasks_output[0], "pydantic", None)
+    if structured is None:
+        raise ValueError("Fast AI generation did not return structured test data.")
+    output = FastGenerationOutput.model_validate(structured)
+    output = _normalize_fast_generation_identifiers(output)
+    _validate_fast_generation_output(output, mode, document_context)
+    return output
+
+
+def _load_demo_sample(mode: DocumentationMode) -> tuple[list[str], str, dict]:
+    sample_path = DEMO_SAMPLE_DIRECTORY / DEMO_SAMPLE_ARCHIVES[mode]
+    if not sample_path.is_file():
+        raise FileNotFoundError(f"Pre-generated demo sample is missing: {sample_path}")
+    expected_names = {filename for filename, _ in DOCUMENT_MODE_PROFILES[mode]["documents"]}
+    with zipfile.ZipFile(sample_path) as archive:
+        names = set(archive.namelist())
+        missing = expected_names - names
+        if missing:
+            raise ValueError(
+                f"Demo sample archive is incomplete: {', '.join(sorted(missing))}"
+            )
+        validation_report = json.loads(archive.read("validation_report.json"))
+        output_dir = Path(tempfile.mkdtemp(prefix="test-docs-demo-sample-"))
+        files = []
+        for filename in expected_names:
+            destination = output_dir / filename
+            destination.write_bytes(archive.read(filename))
+            files.append(str(destination))
+        archive_copy = output_dir / sample_path.name
+        shutil.copyfile(sample_path, archive_copy)
+    return sorted(files), str(archive_copy), validation_report
+
+
 def _write_document_package(
     result,
     topic: str,
     documentation_mode: DocumentationMode | str = DocumentationMode.GENERAL_SOFTWARE,
     document_context: str = "",
+    sample_label: str | None = None,
+    timings: dict[str, float] | None = None,
 ):
     """Write mode-specific Markdown deliverables and a ZIP bundle."""
+    timings = timings if timings is not None else {}
+    assembly_started = time.perf_counter()
     task_outputs = getattr(result, "tasks_output", [])
     mode = DocumentationMode(documentation_mode)
     profile = DOCUMENT_MODE_PROFILES[mode]
@@ -1218,22 +1642,33 @@ def _write_document_package(
         document_context,
         execution_findings,
     )
+    if sample_label:
+        validation_report["pre_generated_sample"] = True
+        validation_report["sample_notice"] = sample_label
+    _report_stage(timings, "document_assembly_validation", assembly_started)
 
     safe_topic = re.sub(r"[^a-zA-Z0-9]+", "-", topic).strip("-").lower() or "software-project"
     output_dir = Path(tempfile.mkdtemp(prefix=f"{safe_topic}-test-docs-"))
     generated_files = []
+    render_started = time.perf_counter()
     for (filename, title), document_text in zip(documents, document_map.values()):
         document_path = output_dir / filename
         content = contents[len(generated_files)]
+        file_started = time.perf_counter()
         if document_path.suffix.casefold() == ".docx":
-            _write_docx(document_path, title, topic, mode, content)
+            _write_docx(document_path, title, topic, mode, content, sample_label)
         elif document_path.suffix.casefold() == ".xlsx":
-            _write_matrix_xlsx(document_path, title, topic, mode, content)
+            _write_matrix_xlsx(
+                document_path, title, topic, mode, content, sample_label
+            )
         else:
             raise ValueError(f"Unsupported document export format: {document_path.suffix}")
+        _report_stage(timings, f"render_{filename}", file_started)
         generated_files.append(str(document_path))
+    _report_stage(timings, "document_rendering", render_started)
 
     archive_path = output_dir.parent / f"{output_dir.name}.zip"
+    zip_started = time.perf_counter()
     with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for file_path in generated_files:
             archive.write(file_path, arcname=Path(file_path).name)
@@ -1241,31 +1676,145 @@ def _write_document_package(
             "validation_report.json",
             json.dumps(validation_report, indent=2, ensure_ascii=False) + "\n",
         )
+    _report_stage(timings, "zip_creation", zip_started)
 
     return generated_files, str(archive_path), validation_report
 
 
-def _run_generation_pipeline(topic, uploaded_files, documentation_mode):
+def _run_generation_pipeline(
+    topic,
+    uploaded_files,
+    documentation_mode,
+    generation_speed: GenerationSpeed | str = GenerationSpeed.FULL,
+    progress=None,
+):
     mode = DocumentationMode(documentation_mode)
+    speed = GenerationSpeed(generation_speed)
+    timings: dict[str, float] = {}
+    total_started = time.perf_counter()
+
+    if speed is GenerationSpeed.DEMO_SAMPLE:
+        _update_progress(progress, 0.1, "Loading pre-generated sample")
+        sample_started = time.perf_counter()
+        document_files, archive_file, validation_report = _load_demo_sample(mode)
+        _report_stage(timings, "sample_loading", sample_started)
+        for stage in (
+            "input_reading",
+            "ai_generation",
+            "document_assembly_validation",
+            "document_rendering",
+            "zip_creation",
+        ):
+            timings[stage] = 0.0
+            logger.info("generation_stage stage=%s elapsed_seconds=0.000 skipped=true", stage)
+        _report_stage(timings, "total", total_started)
+        _update_progress(progress, 1.0, "Ready for download")
+        status = (
+            f"PRE-GENERATED DEMO SAMPLE for {mode.value}. "
+            "Your uploaded files were not read or processed. "
+            f"Sample archive: {Path(archive_file).name}. "
+            f"Loaded in {timings['total']:.3f}s."
+        )
+        return None, document_files, archive_file, status, validation_report, timings
+
+    _update_progress(progress, 0.05, "Analyzing requirements")
+    input_started = time.perf_counter()
     document_context = _build_document_context(uploaded_files)
+    _report_stage(timings, "input_reading", input_started)
     inputs = _build_crew_inputs(topic.strip(), document_context, mode)
-    result = TestStrategyProtocolGenerator().crew().kickoff(inputs=inputs)
+
+    if speed is GenerationSpeed.FAST_AI:
+        if not uploaded_files:
+            raise ValueError(
+                "Fast AI Generation requires uploaded project requirements or architecture documents."
+            )
+        _update_progress(progress, 0.2, "Generating test cases")
+        ai_started = time.perf_counter()
+        structured_output = _run_fast_ai_generation(
+            topic.strip(), document_context, mode
+        )
+        task_outputs = _fast_output_to_task_outputs(structured_output, mode)
+        result = type(
+            "FastGenerationResult",
+            (),
+            {
+                "tasks_output": task_outputs,
+                "raw": "Fast AI generated a structured representative test set.",
+            },
+        )()
+        _report_stage(timings, "ai_generation", ai_started)
+    else:
+        full_crew = TestStrategyProtocolGenerator().crew()
+        ai_started = time.perf_counter()
+        completed_tasks = 0
+
+        def update_task_progress(_task_output):
+            nonlocal completed_tasks
+            completed_tasks += 1
+            logger.info(
+                "generation_stage stage=full_ai_task_completed "
+                "task=%d total_tasks=%d elapsed_seconds=%.3f",
+                completed_tasks,
+                len(full_crew.tasks),
+                time.perf_counter() - ai_started,
+            )
+            if completed_tasks <= 3:
+                _update_progress(
+                    progress,
+                    min(0.1 + completed_tasks * 0.04, 0.25),
+                    "Analyzing requirements",
+                )
+            elif completed_tasks <= 7:
+                _update_progress(
+                    progress,
+                    min(0.25 + completed_tasks * 0.05, 0.65),
+                    "Generating test cases",
+                )
+            else:
+                _update_progress(
+                    progress,
+                    min(0.65 + completed_tasks * 0.03, 0.95),
+                    "Creating documents",
+                )
+
+        full_crew.task_callback = update_task_progress
+        result = full_crew.kickoff(inputs=inputs)
+        _report_stage(timings, "ai_generation", ai_started)
+
+    _update_progress(progress, 0.85, "Creating documents")
+    writer_timings: dict[str, float] = {}
     document_files, archive_file, validation_report = _write_document_package(
         result,
         topic.strip(),
         mode,
         document_context,
+        timings=writer_timings,
     )
+    timings.update(writer_timings)
+    _report_stage(timings, "total", total_started)
     review_count = sum(
         check["status"] != "PASS" for check in validation_report["checks"]
+    )
+    timing_summary = ", ".join(
+        f"{name}={timings.get(name, 0.0):.2f}s"
+        for name in (
+            "input_reading",
+            "ai_generation",
+            "document_assembly_validation",
+            "document_rendering",
+            "zip_creation",
+            "total",
+        )
     )
     status = (
         f"Generated {len(DOCUMENT_MODE_PROFILES[mode]['documents'])} "
         f"separate testing documents for {topic.strip()}. "
         f"Quality validation: {validation_report['status']} "
-        f"({review_count} check(s) require review)."
+        f"({review_count} check(s) require review). "
+        f"Generation speed: {speed.value}. Timings: {timing_summary}."
     )
-    return result, document_files, archive_file, status, validation_report
+    _update_progress(progress, 1.0, "Ready for download")
+    return result, document_files, archive_file, status, validation_report, timings
 
 
 def _build_crew_inputs(
@@ -1322,12 +1871,15 @@ def _build_crew_inputs(
 def run(
     topic: str = "Software Project",
     documentation_mode: DocumentationMode | str = DocumentationMode.GENERAL_SOFTWARE,
+    generation_speed: GenerationSpeed | str = GenerationSpeed.FULL,
 ):
     """
     Run the crew with a default or supplied topic.
     """
     try:
-        result, _, _, _, _ = _run_generation_pipeline(topic, [], documentation_mode)
+        result, _, _, _, _, _ = _run_generation_pipeline(
+            topic, [], documentation_mode, generation_speed
+        )
         return result
     except Exception as e:
         raise Exception(f"An error occurred while running the crew: {e}")
@@ -1336,19 +1888,28 @@ def run(
 def launch_gradio_app():
     """Launch a simple Gradio UI for entering project details and uploading supporting documents."""
 
-    def generate_strategy(topic, uploaded_files, all_documents_added, documentation_mode):
+    def generate_strategy(
+        topic,
+        uploaded_files,
+        all_documents_added,
+        documentation_mode,
+        generation_speed,
+        progress=gr.Progress(track_tqdm=True),
+    ):
         if not topic or not topic.strip():
             raise gr.Error("Please provide a project or technology topic.")
 
         if not all_documents_added:
             raise gr.Error("Please confirm that all required documents were uploaded.")
 
-        _, document_files, archive_file, status, validation_report = _run_generation_pipeline(
+        _, document_files, archive_file, status, _, _ = _run_generation_pipeline(
             topic,
             uploaded_files,
             documentation_mode,
+            generation_speed,
+            progress,
         )
-        return document_files, archive_file, status, validation_report
+        return document_files, archive_file, status
 
     with gr.Blocks(title="Test Strategy Protocol Generator") as demo:
         gr.Markdown("# Test Strategy Protocol Generator")
@@ -1364,6 +1925,16 @@ def launch_gradio_app():
             label="Documentation Mode",
             value=DocumentationMode.GENERAL_SOFTWARE.value,
         )
+        generation_speed = gr.Radio(
+            choices=[speed.value for speed in GenerationSpeed],
+            label="Generation Speed",
+            value=GenerationSpeed.FAST_AI.value,
+        )
+        gr.Markdown(
+            "**Demo Mode** loads a pre-generated sample without reading uploaded files. "
+            "**Fast AI Generation** uses uploaded documents and one structured AI request; "
+            "**Full Generation** runs the comprehensive multi-agent workflow."
+        )
         uploaded_files = gr.File(
             label="Upload required documents",
             file_count="multiple",
@@ -1377,12 +1948,17 @@ def launch_gradio_app():
         documents_output = gr.Files(label="Individual Documents")
         archive_output = gr.File(label="Download All Documents (.zip)")
         status_output = gr.Textbox(label="Generation Status", interactive=False)
-        validation_output = gr.JSON(label="Document Quality Validation")
 
         submit.click(
             fn=generate_strategy,
-            inputs=[topic, uploaded_files, all_documents_added, documentation_mode],
-            outputs=[documents_output, archive_output, status_output, validation_output],
+            inputs=[
+                topic,
+                uploaded_files,
+                all_documents_added,
+                documentation_mode,
+                generation_speed,
+            ],
+            outputs=[documents_output, archive_output, status_output],
         )
 
     return demo
