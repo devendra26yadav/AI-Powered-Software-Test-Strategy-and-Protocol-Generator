@@ -305,13 +305,19 @@ def _test_case_ids(test_cases: str) -> list[str]:
     return list(dict.fromkeys(re.findall(r"\bTC-[A-Z0-9]+(?:-[A-Z0-9]+)*\b", test_cases)))
 
 
+def _risk_ids(risk_content: str) -> list[str]:
+    return list(
+        dict.fromkeys(
+            re.findall(r"\b(?:RISK|RSK|RC)-[A-Z0-9]+(?:-[A-Z0-9]+)*\b", risk_content)
+        )
+    )
+
+
 def _build_traceability_matrix(requirements, risks, test_cases, profile) -> str:
     heading = profile["matrix_heading"]
     matrix = _extract_markdown_section(test_cases, heading)
     requirement_ids = _requirement_ids(requirements)
-    risk_ids = list(
-        dict.fromkeys(re.findall(r"\b(?:RISK|RC)-[A-Z0-9]+(?:-[A-Z0-9]+)*\b", risks))
-    )
+    risk_ids = _risk_ids(risks)
     test_case_ids = _test_case_ids(test_cases)
     columns = profile["matrix_columns"]
 
@@ -418,7 +424,7 @@ def _build_traceability_matrix(requirements, risks, test_cases, profile) -> str:
     for risk_id in missing_risks:
         values = {
             "Requirement ID": "Not provided",
-            "Risk Reference": risk_id if risk_id.startswith("RISK-") else "Not provided",
+            "Risk Reference": risk_id if risk_id.startswith(("RISK-", "RSK-")) else "Not provided",
             "Risk Control": risk_id if risk_id.startswith("RC-") else "Not provided",
             "Test Case ID": "Not linked",
             "Verification Status": "Pending / Not Verified",
@@ -517,15 +523,25 @@ def _case_records(content: str) -> list[dict[str, str]]:
                 re.IGNORECASE | re.MULTILINE,
             )
         )
-        inline_matches = [] if field_matches else list(
+        inline_matches = list(
             re.finditer(
                 r"^\s*(?P<id>TC-[A-Z0-9]+(?:-[A-Z0-9]+)*)\s*[:.)-].*$",
                 content,
                 re.IGNORECASE | re.MULTILINE,
             )
         )
-        matches = field_matches or inline_matches
-        starts = [(match.start(), match.end(), match.group("id").upper(), 0) for match in matches]
+        matches = [
+            (match.start(), match.end(), match.group("id").upper())
+            for match in field_matches
+        ]
+        for match in inline_matches:
+            case_id = match.group("id").upper()
+            preceding_fields = [item for item in matches if item[0] < match.start()]
+            if preceding_fields and preceding_fields[-1][2] == case_id:
+                continue
+            matches.append((match.start(), match.end(), case_id))
+        matches.sort()
+        starts = [(start, end, case_id, 0) for start, end, case_id in matches]
         heading_pattern = re.compile(r"^\s*$")
 
     records = []
@@ -576,6 +592,18 @@ def _case_records(content: str) -> list[dict[str, str]]:
             }
         )
     return records
+
+
+def _remove_protocol_test_cases(protocol: str) -> str:
+    case_boundary = re.search(
+        r"^\s*(?:[-*]\s*)?(?:\*\*)?Test Case ID(?:\*\*)?\s*:\s*TC-"
+        r"|^#{1,6}\s+(?:Verification )?Test Cases?\s*$",
+        protocol,
+        re.IGNORECASE | re.MULTILINE,
+    )
+    if not case_boundary:
+        return protocol.strip()
+    return protocol[:case_boundary.start()].strip()
 
 
 def _meaningful_value(value: str) -> bool:
@@ -772,17 +800,15 @@ def _validate_document_quality(
         case["id"] for case in cases if not case["expected"]
     )
 
-    supported_risk_ids = set(
-        re.findall(r"\b(?:RISK|RC)-[A-Z0-9]+(?:-[A-Z0-9]+)*\b", risks)
-    ) if profile["medical_device"] else set()
+    supported_risk_ids = set(_risk_ids(risks)) if profile["medical_device"] else set()
     matrix_risk_ids = {
         risk_id
         for column in ("Risk Reference", "Risk Control")
         for value in _matrix_column_values(matrix, column)
-        for risk_id in re.findall(r"\b(?:RISK|RC)-[A-Z0-9]+(?:-[A-Z0-9]+)*\b", value)
+        for risk_id in _risk_ids(value)
     } if profile["medical_device"] else set()
     protocol_risk_ids = set(
-        re.findall(r"\b(?:RISK|RC)-[A-Z0-9]+(?:-[A-Z0-9]+)*\b", protocol)
+        _risk_ids(protocol)
     ) if profile["medical_device"] else set()
     invalid_risk_refs = sorted(
         (protocol_risk_ids | matrix_risk_ids) - supported_risk_ids
@@ -1076,7 +1102,7 @@ def _build_document_contents(
             },
         )
 
-    protocol_parts = [outputs["protocol"], test_cases]
+    protocol_parts = [_remove_protocol_test_cases(outputs["protocol"]), test_cases]
     if profile["medical_device"]:
         protocol = "\n\n".join(part for part in protocol_parts if part)
         if not re.search(r"^\s*[-*]\s*\*\*Test Case ID:", protocol, re.MULTILINE):

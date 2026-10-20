@@ -184,6 +184,22 @@ class BuildCrewInputsTests(unittest.TestCase):
         )
         self.assertIn("Risk identifiers requiring mapping: RISK-001, RC-001", matrix)
 
+    def test_traceability_preserves_rsk_risk_identifiers(self):
+        matrix = _build_traceability_matrix(
+            "REQ-F-001: Functional requirement",
+            "RSK-005: Unauthorized stock change",
+            "## Requirements and Risk Traceability Matrix\n"
+            "| Requirement ID | Risk Reference | Risk Control | Test Case ID | "
+            "Verification Status | Evidence Reference |\n"
+            "|---|---|---|---|---|---|\n"
+            "| REQ-F-001 | RSK-005 | Authorized adjustment control | TC-1 | "
+            "Pending / Not Verified | Not provided |",
+            DOCUMENT_MODE_PROFILES[DocumentationMode.MEDICAL_DEVICE_SOFTWARE],
+        )
+
+        self.assertIn("RSK-005", matrix)
+        self.assertNotIn("Risk identifiers requiring mapping: RSK-005", matrix)
+
     def test_case_execution_fields_are_cleared_without_execution_evidence(self):
         cases = (
             "- **Actual Results:** It worked\n"
@@ -196,6 +212,43 @@ class BuildCrewInputsTests(unittest.TestCase):
         self.assertIn("Actual Results:** Not executed", pending)
         self.assertIn("Test Status:** Not Executed", pending)
         self.assertIn("Objective Evidence Reference:** Not provided", pending)
+
+    def test_protocol_case_details_are_not_duplicated_from_protocol_task(self):
+        outputs = [
+            TaskOutput("Test plan"),
+            TaskOutput("Research"),
+            TaskOutput("REQ-F-001: Requirement"),
+            TaskOutput("Strategy"),
+            TaskOutput("Risk"),
+            TaskOutput(
+                "Protocol execution guidance.\n\n"
+                "Test Case ID: TC-1\n"
+                "Linked Requirement ID: REQ-F-001\n"
+                "Expected Results: Duplicate generated case."
+            ),
+            TaskOutput(
+                "## Requirements Traceability Matrix\n"
+                "| Requirement ID | Test Case ID | Verification Status | Evidence Reference |\n"
+                "|---|---|---|---|\n"
+                "| REQ-F-001 | TC-1 | Pending | Not provided |\n\n"
+                "## Detailed Test Cases\n"
+                "### TC-1\n"
+                "- **Linked Requirement ID:** REQ-F-001\n"
+                "- **Expected Results:** Canonical generated case."
+            ),
+            TaskOutput("Automation"),
+            TaskOutput("Quality"),
+            TaskOutput("Report"),
+        ]
+
+        protocol = _build_document_contents(
+            outputs, type("CrewResult", (), {"raw": ""})(), DocumentationMode.GENERAL_SOFTWARE
+        )[1]
+
+        self.assertIn("Protocol execution guidance.", protocol)
+        self.assertIn("Canonical generated case.", protocol)
+        self.assertNotIn("Duplicate generated case.", protocol)
+        self.assertEqual(protocol.count("TC-1"), 1)
 
     def test_shared_pipeline_selects_profile_for_each_mode(self):
         for mode, documents in (
