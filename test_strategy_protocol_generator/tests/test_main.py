@@ -693,6 +693,10 @@ class DocumentPackageTests(unittest.TestCase):
             self.assertIn("Project scope and acceptance criteria", plan)
             self.assertIn("Test strategy and environment", plan)
             self.assertIn("Manual and automated testing approach", plan)
+            self.assertIn("Work by Tester Role", plan)
+            self.assertIn("Work by Test Type", plan)
+            self.assertIn("Responsible Tester Role", protocol)
+            self.assertIn("Test Type", protocol)
             self.assertIn("Test execution procedures", protocol)
             self.assertIn("TC-1: Verify inventory item creation.", protocol)
             self.assertNotIn("| REQ-F-001 | TC-1 | Pending |", protocol)
@@ -895,6 +899,52 @@ class DocumentPackageTests(unittest.TestCase):
             self.assertNotIn("Executive conclusions", summary)
             self.assertEqual(validation_report["documentation_mode"], DocumentationMode.MEDICAL_DEVICE_SOFTWARE.value)
             self.assertEqual(report_from_archive, validation_report)
+        finally:
+            self._remove_package(files, archive_path)
+
+    def test_cases_are_grouped_by_tester_role_and_test_type(self):
+        outputs = list(self.task_outputs)
+        outputs[6] = TaskOutput(
+            "## Detailed Test Cases\n"
+            "### TC-1\n"
+            "- **Test Case ID:** TC-1\n"
+            "- **Linked Requirement ID:** REQ-F-001\n"
+            "- **Test Steps:** Create an inventory item\n"
+            "- **Expected Results:** Item is created\n\n"
+            "### TC-2\n"
+            "- **Test Case ID:** TC-2\n"
+            "- **Linked Requirement ID:** REQ-F-001\n"
+            "- **Test Steps:** Repeat the payment failed event and restore seats once\n"
+            "- **Expected Results:** Seats are not restored twice\n\n"
+            "### TC-API\n"
+            "- **Test Case ID:** TC-API\n"
+            "- **Linked Requirement ID:** REQ-NF-001\n"
+            "- **Test Steps:** Call the booking API and confirm the response time\n"
+            "- **Expected Results:** Response meets the performance target\n"
+        )
+        outputs[7] = TaskOutput("Automate TC-API with an API contract test.")
+        files, archive_path, _ = self._write_package(task_outputs=outputs)
+        try:
+            with zipfile.ZipFile(archive_path) as archive:
+                plan = _read_docx(archive.read("Software_Test_Plan.docx"))
+                protocol = _read_docx(archive.read("Software_Test_Protocol.docx"))
+
+            self.assertIn("Work by Tester Role", plan)
+            self.assertIn("Work by Test Type", plan)
+            role_catalog = plan.split("Work by Tester Role", 1)[1].split("Work by Test Type", 1)[0]
+            type_catalog = plan.split("Work by Test Type", 1)[1]
+            manual_section = role_catalog.split("Manual Tester", 1)[1].split("Automation Engineer", 1)[0]
+            automation_section = role_catalog.split("Automation Engineer", 1)[1].split("Risk Reviewer", 1)[0]
+            failure_section = type_catalog.split("Failure and recovery", 1)[1].split("Non-functional", 1)[0]
+            nonfunctional_section = type_catalog.split("Non-functional", 1)[1].split("Integration", 1)[0]
+            self.assertIn("TC-1", manual_section)
+            self.assertIn("TC-API", automation_section)
+            self.assertIn("TC-2", failure_section)
+            self.assertIn("TC-API", nonfunctional_section)
+            self.assertIn("Responsible Tester Role: Manual Tester", protocol)
+            self.assertIn("Responsible Tester Role: Automation Engineer", protocol)
+            self.assertIn("Test Type: Failure and recovery", protocol)
+            self.assertIn("Test Type: Non-functional", protocol)
         finally:
             self._remove_package(files, archive_path)
 

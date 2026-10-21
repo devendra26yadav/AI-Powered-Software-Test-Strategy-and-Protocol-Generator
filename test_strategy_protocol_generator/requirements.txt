@@ -1,0 +1,4 @@
+crewai[tools]>=1.15.27,<2.0.0
+gradio>=4.36.0,<6.0.0
+openpyxl>=3.1.5,<4.0.0
+python-docx>=1.1.2,<2.0.0

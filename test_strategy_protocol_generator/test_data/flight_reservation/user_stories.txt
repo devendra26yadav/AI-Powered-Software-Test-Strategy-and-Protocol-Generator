@@ -1,0 +1,25 @@
+Northline Reservations release 2.4 user stories
+
+US-01 Hold a seat before payment
+As a traveler, I want the fare I selected to be held while I pay, so that the seat is not sold to someone else during checkout.
+Acceptance: creating a pending booking reduces sellable seats by the seats in that booking (FR-002). The hold lasts 15 minutes (BR-001).
+
+US-02 Pay the amount I was shown
+As a traveler, I want to be charged the total displayed when I held the fare, so that the price does not change at payment.
+Acceptance: the captured amount equals the held total (FR-003). A successful capture confirms the booking and sends one email (FR-004).
+
+US-03 Recover cleanly when my card is declined
+As a traveler, I want a declined card to cancel my unpaid booking and put the seats back on sale, so that I am not charged and the airline does not keep an unpaid hold.
+Acceptance: payment failure cancels the pending booking, restores only that booking's seats, and does not send a confirmation email (FR-005, FR-006, BR-003, BR-004). The traveler can search again and cannot pay the cancelled reference (FR-009).
+
+US-04 Do not undo the cleanup twice
+As an airline inventory owner, I want a repeated failure notice to be ignored after the first cleanup, so that a duplicate event does not create an extra seat.
+Acceptance: delivering the same PaymentFailed event twice leaves the booking cancelled once and does not increase sellable seats a second time (FR-007). An event for an unknown booking changes nothing (FR-008).
+
+US-05 Keep a record of seat changes
+As a support agent, I want each capacity change tied to a booking and an event, so that I can explain why a seat count moved.
+Acceptance: each change stores booking reference, event identifier, seat count, and UTC time (FR-010).
+
+US-06 Leave a paid booking alone
+As a traveler who already received a confirmation, I want a late failure notice not to cancel my ticket.
+Acceptance: a PaymentFailed event after confirmation is quarantined and the booking stays confirmed (BR-005).

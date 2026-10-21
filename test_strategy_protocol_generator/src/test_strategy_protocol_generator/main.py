@@ -367,6 +367,192 @@ def _risk_ids(risk_content: str) -> list[str]:
     )
 
 
+_TEST_TYPE_ORDER = (
+    "Functional",
+    "Negative",
+    "Boundary",
+    "Failure and recovery",
+    "Non-functional",
+    "Integration",
+    "Regression",
+)
+_TEST_TYPE_RULES = (
+    (
+        "Failure and recovery",
+        re.compile(
+            r"\b(?:fail(?:s|ed|ure)?|recover(?:y|ed)?|restore[ds]?|retry|timeout|duplicate|idempoten\w*)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "Boundary",
+        re.compile(r"\b(?:boundary|threshold|limit|maximum|minimum|zero|edge)\b", re.IGNORECASE),
+    ),
+    (
+        "Negative",
+        re.compile(
+            r"\b(?:invalid|reject(?:s|ed)?|unauthorized|denied|forbidden|must not|negative)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "Regression",
+        re.compile(r"\bregression\b", re.IGNORECASE),
+    ),
+    (
+        "Non-functional",
+        re.compile(
+            r"\b(?:performance|load|security|encrypt\w*|latency|accessib\w*|browser)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "Integration",
+        re.compile(r"\b(?:integrat\w*|api|endpoint|event bus|service)\b", re.IGNORECASE),
+    ),
+)
+_AUTOMATION_CASE_PATTERN = re.compile(
+    r"\b(?:api|endpoint|automated|automation|nunit|contract test|idempoten\w*)\b",
+    re.IGNORECASE,
+)
+
+
+def _classify_test_case(case: dict[str, str], automation_text: str) -> tuple[str, str]:
+    """Assign one executing tester role and one test type from the case text."""
+    block = case["block"]
+    test_type = "Functional"
+    if any(requirement_id.startswith("REQ-NF-") for requirement_id in case["requirements"]):
+        test_type = "Non-functional"
+    else:
+        for name, pattern in _TEST_TYPE_RULES:
+            if pattern.search(block):
+                test_type = name
+                break
+
+    cited_for_automation = bool(
+        re.search(rf"\b{re.escape(case['id'])}\b", automation_text, re.IGNORECASE)
+        and re.search(r"\bautomat", automation_text, re.IGNORECASE)
+    )
+    role = (
+        "Automation Engineer"
+        if _AUTOMATION_CASE_PATTERN.search(block) or cited_for_automation
+        else "Manual Tester"
+    )
+    return role, test_type
+
+
+def _case_classifications(
+    protocol: str,
+    automation_text: str,
+) -> dict[str, tuple[str, str]]:
+    classifications = {}
+    for case in _case_records(protocol):
+        classifications.setdefault(case["id"], _classify_test_case(case, automation_text))
+    return classifications
+
+
+def _insert_case_labels(block: str, role: str, test_type: str) -> str:
+    if re.search(r"Responsible Tester Role", block, re.IGNORECASE):
+        return block
+    labels = (
+        f"- **Responsible Tester Role:** {role}\n"
+        f"- **Test Type:** {test_type}"
+    )
+    field = re.search(
+        r"^\s*(?:[-*]\s*)?(?:\*\*)?Test Case ID(?:\*\*)?\s*:.*$",
+        block,
+        re.IGNORECASE | re.MULTILINE,
+    )
+    if field:
+        return block[: field.end()] + "\n" + labels + block[field.end() :]
+    heading = re.search(r"^#{2,6}\s+.*$", block, re.MULTILINE)
+    if heading:
+        return block[: heading.end()] + "\n" + labels + block[heading.end() :]
+    return labels + "\n" + block
+
+
+def _annotate_cases_with_classification(
+    protocol: str,
+    classifications: dict[str, tuple[str, str]],
+) -> str:
+    records = _case_records(protocol)
+    updated = []
+    cursor = 0
+    for case in records:
+        start = protocol.find(case["block"], cursor)
+        if start < 0:
+            continue
+        role, test_type = classifications.get(case["id"], ("Manual Tester", "Functional"))
+        updated.append(protocol[cursor:start])
+        updated.append(_insert_case_labels(case["block"], role, test_type))
+        cursor = start + len(case["block"])
+    updated.append(protocol[cursor:])
+    return "".join(updated)
+
+
+def _format_id_list(case_ids: list[str], classifications: dict[str, tuple[str, str]], by_role: bool) -> str:
+    if not case_ids:
+        return "- None assigned."
+    lines = []
+    for case_id in case_ids:
+        role, test_type = classifications[case_id]
+        detail = test_type if by_role else role
+        lines.append(f"- {case_id} — {detail}")
+    return "\n".join(lines)
+
+
+def _build_classification_catalog(
+    classifications: dict[str, tuple[str, str]],
+    protocol: str,
+    automation_text: str,
+    risk_text: str,
+) -> str:
+    """Group the same cases by executing role and by test type."""
+    by_role: dict[str, list[str]] = {"Manual Tester": [], "Automation Engineer": []}
+    by_type: dict[str, list[str]] = {test_type: [] for test_type in _TEST_TYPE_ORDER}
+    risk_cases = []
+    blocks = {case["id"]: case["block"] for case in _case_records(protocol)}
+    for case_id, (role, test_type) in classifications.items():
+        by_role.setdefault(role, []).append(case_id)
+        by_type.setdefault(test_type, []).append(case_id)
+        if _risk_ids(blocks.get(case_id, "")):
+            risk_cases.append(case_id)
+
+    role_section = "\n".join(
+        [
+            "## Work by Tester Role",
+            "",
+            "Each test case has one executing role. The test lead confirms these draft assignments before execution. Risk Reviewer checks risk-linked cases and does not replace the executor.",
+            "",
+            "### Test Lead",
+            "Owns scope, priorities, entry and exit criteria, and unresolved decisions in this test plan.",
+            "",
+            "### Manual Tester",
+            _format_id_list(by_role.get("Manual Tester", []), classifications, by_role=True),
+            "",
+            "### Automation Engineer",
+            _format_id_list(by_role.get("Automation Engineer", []), classifications, by_role=True),
+            "",
+            automation_text.strip() or "No automation assessment was returned.",
+            "",
+            "### Risk Reviewer",
+            _format_id_list(risk_cases, classifications, by_role=True),
+            "",
+            risk_text.strip() or "No source-supported risk analysis was returned.",
+        ]
+    )
+    type_lines = ["## Work by Test Type", ""]
+    for test_type in list(dict.fromkeys([*_TEST_TYPE_ORDER, *by_type])):
+        type_lines.extend(
+            [
+                f"### {test_type}",
+                _format_id_list(by_type.get(test_type, []), classifications, by_role=False),
+                "",
+            ]
+        )
+    return role_section + "\n\n" + "\n".join(type_lines).strip()
+
+
 def _build_traceability_matrix(requirements, risks, test_cases, profile) -> str:
     heading = profile["matrix_heading"]
     matrix = _extract_markdown_section(test_cases, heading)
@@ -776,7 +962,8 @@ def _case_fingerprint(case: dict[str, str]) -> str:
     value = re.sub(r"\b(?:TC|REQ-(?:F|NF))-[A-Z0-9-]+\b", "", value, flags=re.IGNORECASE)
     value = re.sub(
         r"^\s*(?:[-*]\s*)?(?:\*\*)?(?:Test Case ID|Linked Requirement ID|"
-        r"Requirement ID|Actual Results?|Test Status|(?:Objective )?Evidence Reference)"
+        r"Requirement ID|Responsible Tester Role|Test Type|Actual Results?|Test Status|"
+        r"(?:Objective )?Evidence Reference)"
         r"(?:\*\*)?\s*:.*$",
         "",
         value,
@@ -1242,6 +1429,21 @@ def _build_document_contents(
             "## Strategy Summary\n\n"
             f"{report}"
         )
+
+    classifications = _case_classifications(protocol, outputs["automation"])
+    protocol = _annotate_cases_with_classification(protocol, classifications)
+    catalog = _build_classification_catalog(
+        classifications,
+        protocol,
+        outputs["automation"],
+        outputs["risk"],
+    )
+    plan = f"{plan}\n\n{catalog}".strip()
+    summary = (
+        f"{summary}\n\n"
+        "Tester role and test type assignments are listed in the test plan "
+        "and on each protocol test case."
+    ).strip()
 
     documents = [plan, protocol, matrix, summary]
     if return_execution_findings:

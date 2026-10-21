@@ -1,0 +1,52 @@
+service: northline-booking-api
+release: "2.4"
+event_bus: booking-events
+delivery: at_least_once
+ordering: not_guaranteed_across_bookings
+
+idempotency:
+  key: payment_attempt_id
+  rule: >
+    A payment_attempt_id that has already been applied must not change booking
+    state or sellable seat count again.
+
+events:
+  PaymentCaptured:
+    required_fields:
+      - event_id
+      - payment_attempt_id
+      - booking_reference
+      - amount
+      - currency
+      - occurred_at
+    effect: pending booking becomes confirmed and reserved seats become sold
+
+  PaymentFailed:
+    required_fields:
+      - event_id
+      - payment_attempt_id
+      - booking_reference
+      - failure_code
+      - occurred_at
+    effect: >
+      If the booking is pending, cancel it and restore only the seats reserved
+      for that booking. If the same payment_attempt_id was already applied, do
+      nothing. If the booking is already confirmed, quarantine the event.
+
+failure_codes:
+  - card_declined
+  - insufficient_funds
+  - processor_timeout
+  - authentication_failed
+
+test_provider_controls:
+  - emit_single_failure
+  - emit_duplicate_failure
+  - emit_failure_after_capture
+  - emit_failure_for_unknown_booking
+  - delay_failure_until_after_hold_expiry
+
+constraints:
+  - card_primary_account_number_must_not_be_logged
+  - amount_currency_is_USD_for_release_2_4
+  - one_payment_attempt_belongs_to_one_booking_reference

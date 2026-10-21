@@ -1,0 +1,7 @@
+risk_id,failure,affected_requirements,impact,control_id,control,status
+RSK-001,Duplicate PaymentFailed delivery restores seats twice,FR-005;FR-007,Sellable seat count is higher than the cabin allows and the flight is oversold,RC-001,Ignore a payment_attempt_id that is already marked applied,open
+RSK-002,Payment failure cancels the booking but capacity restore fails,FR-005;FR-010,Seats stay reserved for a booking that will never be paid,RC-002,Keep the booking pending and retry the event when capacity restore fails,open
+RSK-003,Hold expiry and PaymentFailed both release the same seats,FR-002;FR-005;BR-001,One failed payment returns the seats twice,RC-003,Only the first successful release may restore capacity,open
+RSK-004,Late PaymentFailed cancels a booking that was already confirmed,FR-004;BR-005,A paid traveler loses a confirmed seat,RC-004,Quarantine PaymentFailed when the booking is already confirmed,open
+RSK-005,Displayed total and captured amount differ,FR-003,Traveler is charged a different amount from the fare they accepted,RC-005,Reject confirmation unless the captured amount equals the held total,open
+RSK-006,Unknown booking reference still changes a flight seat count,FR-008,Capacity moves with no matching booking,RC-006,Record the event and do not call the capacity service,open
